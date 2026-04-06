@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "package": "org.kyowa.familyaddons.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "familyaddons.refmap.json",
+  "mixins": [],
+  "client": [
+    "WorldRendererMixin",
+    "SignEditMixin",
+    "EntityOutlineMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
