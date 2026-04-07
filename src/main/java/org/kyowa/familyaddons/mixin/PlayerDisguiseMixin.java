@@ -7,20 +7,22 @@ import net.minecraft.client.render.entity.EntityRenderer;
 import net.minecraft.client.render.entity.LivingEntityRenderer;
 import net.minecraft.client.render.entity.state.LivingEntityRenderState;
 import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
-import net.minecraft.client.render.entity.state.SlimeEntityRenderState;
 import net.minecraft.client.render.state.CameraRenderState;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.SpawnReason;
-import net.minecraft.entity.mob.SlimeEntity;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.client.model.Model;
 import net.minecraft.registry.Registries;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.kyowa.familyaddons.EntityRefAccessor;
 import org.kyowa.familyaddons.features.PlayerDisguise;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -31,6 +33,9 @@ import java.lang.reflect.Method;
 public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         S extends LivingEntityRenderState,
         M extends Model<?>> {
+
+    @Shadow
+    protected abstract void renderLabelIfPresent(S state, Text text, MatrixStack matrices, OrderedRenderCommandQueue queue, CameraRenderState cameraRenderState);
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -45,7 +50,6 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         LivingEntity entity = ((EntityRefAccessor) state).familyaddons$getEntity();
         if (!(entity instanceof PlayerEntity player)) return;
 
-        // scope: 0 = self only, 1 = everyone
         int scope = PlayerDisguise.INSTANCE.getScope();
         boolean isSelf = player == client.player;
         if (scope == 0 && !isSelf) return;
@@ -66,6 +70,16 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             return;
         }
         if (mob == null) return;
+
+        // Baby toggle — works on animals and most ageable mobs
+        if (PlayerDisguise.INSTANCE.isBaby()) {
+            try {
+                Method setBaby = mob.getClass().getMethod("setBaby", boolean.class);
+                setBaby.invoke(mob, true);
+            } catch (Exception ignored) {
+                // Mob doesn't support baby form, just skip silently
+            }
+        }
 
         mob.setPos(player.getX(), player.getY(), player.getZ());
         mob.lastX = player.lastX;
@@ -88,7 +102,6 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
                 (EntityRenderer<LivingEntity, LivingEntityRenderState>) dispatcher.getRenderer(mob);
         if (renderer == null) return;
 
-        // Use reflection to call createRenderState() — avoids @Shadow refmap issues entirely
         LivingEntityRenderState mobState;
         try {
             Method createRenderState = null;
@@ -135,6 +148,11 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         } catch (Exception e) {
             return;
         }
+
+        // Render nametag using the original player state — correct signature for 1.21.10
+        @SuppressWarnings("unchecked")
+        Text displayName = player.getDisplayName();
+        renderLabelIfPresent((S) playerState, displayName, matrixStack, queue, cameraRenderState);
 
         ci.cancel();
     }

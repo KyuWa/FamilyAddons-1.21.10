@@ -22,4 +22,9 @@ class PlayerDisguiseConfig {
     @ConfigOption(name = "Scope", desc = "Self Only = only you see yourself as the mob. Everyone = all players appear as the mob.")
     @ConfigEditorDropdown(values = ["Self Only", "Everyone"])
     var scope: Int = 0
+
+    @Expose @JvmField
+    @ConfigOption(name = "Baby", desc = "Render as a baby mob if the mob type supports it (e.g. zombie, cow, pig).")
+    @ConfigEditorBoolean
+    var baby: Boolean = false
 }
