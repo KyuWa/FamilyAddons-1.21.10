@@ -12,10 +12,11 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.SpawnReason;
+import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.mob.ZombieEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.client.model.Model;
 import net.minecraft.registry.Registries;
-import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.kyowa.familyaddons.EntityRefAccessor;
 import org.kyowa.familyaddons.features.PlayerDisguise;
@@ -25,15 +26,15 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
 
 @Mixin(LivingEntityRenderer.class)
 public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         S extends LivingEntityRenderState,
         M extends Model<?>> {
 
-    // Cached reflection methods — found once per renderer instance
-    private static Method cachedCreateRenderState = null;
-    private static Method cachedRenderLabelIfPresent = null;
+    private static final Map<Class<?>, Method> createRenderStateCache = new HashMap<>();
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -69,12 +70,13 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         }
         if (mob == null) return;
 
-        // Baby toggle via reflection
+        // Baby — use instanceof checks against known types, no reflection needed
         if (PlayerDisguise.INSTANCE.isBaby()) {
-            try {
-                Method setBaby = mob.getClass().getMethod("setBaby", boolean.class);
-                setBaby.invoke(mob, true);
-            } catch (Exception ignored) {}
+            if (mob instanceof AnimalEntity animal) {
+                animal.setBreedingAge(-24000);
+            } else if (mob instanceof ZombieEntity zombie) {
+                zombie.setBaby(true);
+            }
         }
 
         mob.setPos(player.getX(), player.getY(), player.getZ());
@@ -98,8 +100,8 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
                 (EntityRenderer<LivingEntity, LivingEntityRenderState>) dispatcher.getRenderer(mob);
         if (renderer == null) return;
 
-        // Find createRenderState via reflection
-        if (cachedCreateRenderState == null) {
+        Method createRenderState = createRenderStateCache.get(renderer.getClass());
+        if (createRenderState == null) {
             Class<?> cls = renderer.getClass();
             outer:
             while (cls != null) {
@@ -107,18 +109,19 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
                     if (m.getParameterCount() == 0 &&
                             LivingEntityRenderState.class.isAssignableFrom(m.getReturnType())) {
                         m.setAccessible(true);
-                        cachedCreateRenderState = m;
+                        createRenderState = m;
                         break outer;
                     }
                 }
                 cls = cls.getSuperclass();
             }
+            if (createRenderState == null) return;
+            createRenderStateCache.put(renderer.getClass(), createRenderState);
         }
-        if (cachedCreateRenderState == null) return;
 
         LivingEntityRenderState mobState;
         try {
-            mobState = (LivingEntityRenderState) cachedCreateRenderState.invoke(renderer);
+            mobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
         } catch (Exception e) {
             return;
         }
@@ -148,26 +151,17 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             return;
         }
 
-        // Find renderLabelIfPresent on the PLAYER renderer (which is `this`) via reflection
-        // It lives on EntityRenderer, not LivingEntityRenderer, so we walk up from `this`
-        if (cachedRenderLabelIfPresent == null) {
-            Class<?> cls = this.getClass();
-            outer:
-            while (cls != null) {
-                for (Method m : cls.getDeclaredMethods()) {
-                    if (m.getName().equals("renderLabelIfPresent")) {
-                        m.setAccessible(true);
-                        cachedRenderLabelIfPresent = m;
-                        break outer;
-                    }
-                }
-                cls = cls.getSuperclass();
-            }
-        }
-        if (cachedRenderLabelIfPresent != null) {
-            try {
-                cachedRenderLabelIfPresent.invoke(this, playerState, player.getDisplayName(), matrixStack, queue, cameraRenderState);
-            } catch (Exception ignored) {}
+        if (playerState.displayName != null && playerState.nameLabelPos != null) {
+            queue.submitLabel(
+                    matrixStack,
+                    playerState.nameLabelPos,
+                    0,
+                    playerState.displayName,
+                    !playerState.sneaking,
+                    playerState.light,
+                    playerState.squaredDistanceToCamera,
+                    cameraRenderState
+            );
         }
 
         ci.cancel();

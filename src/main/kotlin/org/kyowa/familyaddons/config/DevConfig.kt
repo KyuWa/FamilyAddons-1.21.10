@@ -1,7 +1,8 @@
 package org.kyowa.familyaddons.config
 
 import com.google.gson.annotations.Expose
-import io.github.notenoughupdates.moulconfig.annotations.*
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorKeybind
+import io.github.notenoughupdates.moulconfig.annotations.ConfigOption
 import org.lwjgl.glfw.GLFW
 
 class DevConfig {
@@ -22,7 +23,7 @@ class DevConfig {
     var itemNbtKey = GLFW.GLFW_KEY_UNKNOWN
 
     @Expose @JvmField
-    @ConfigOption(name = "Copy Raw Chat", desc = "Press while hovering over a chat message to copy its raw text with color codes to clipboard.")
+    @ConfigOption(name = "Copy Raw Chat", desc = "Press while hovering over a chat message to copy its raw text.")
     @ConfigEditorKeybind(defaultKey = GLFW.GLFW_KEY_UNKNOWN)
     var copyRawChatKey = GLFW.GLFW_KEY_UNKNOWN
 }
