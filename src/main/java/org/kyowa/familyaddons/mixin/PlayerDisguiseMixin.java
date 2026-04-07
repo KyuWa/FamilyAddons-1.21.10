@@ -36,6 +36,10 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
     private static final Map<Class<?>, Method> createRenderStateCache = new HashMap<>();
 
+    // Cached mob and the mob ID it was created for
+    private static LivingEntity cachedMob = null;
+    private static String cachedMobId = null;
+
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
             at = @At("HEAD"),
@@ -62,23 +66,27 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         EntityType<?> type = Registries.ENTITY_TYPE.get(id);
         if (type == null || type == EntityType.PLAYER) return;
 
-        LivingEntity mob;
-        try {
-            mob = (LivingEntity) type.create(player.getEntityWorld(), SpawnReason.COMMAND);
-        } catch (Exception e) {
-            return;
-        }
-        if (mob == null) return;
+        // Reuse cached mob if the mob ID hasn't changed
+        if (cachedMob == null || !mobId.equals(cachedMobId)) {
+            try {
+                cachedMob = (LivingEntity) type.create(player.getEntityWorld(), SpawnReason.COMMAND);
+            } catch (Exception e) {
+                cachedMob = null;
+                return;
+            }
+            if (cachedMob == null) return;
+            cachedMobId = mobId;
 
-        // Baby — use instanceof checks against known types, no reflection needed
-        if (PlayerDisguise.INSTANCE.isBaby()) {
-            if (mob instanceof AnimalEntity animal) {
-                animal.setBreedingAge(-24000);
-            } else if (mob instanceof ZombieEntity zombie) {
-                zombie.setBaby(true);
+            if (PlayerDisguise.INSTANCE.isBaby()) {
+                if (cachedMob instanceof AnimalEntity animal) {
+                    animal.setBreedingAge(-24000);
+                } else if (cachedMob instanceof ZombieEntity zombie) {
+                    zombie.setBaby(true);
+                }
             }
         }
 
+        LivingEntity mob = cachedMob;
         mob.setPos(player.getX(), player.getY(), player.getZ());
         mob.lastX = player.lastX;
         mob.lastY = player.lastY;
