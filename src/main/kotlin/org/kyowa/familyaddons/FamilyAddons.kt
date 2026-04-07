@@ -44,7 +44,7 @@ object FamilyAddons : ClientModInitializer {
         GfsKeybinds.register()
         PetValueCommand.register()
         FarmCalcCommand.register()
-        
+
         // Party
         PartyTracker.register()
         PartyCommands.register()
@@ -74,6 +74,9 @@ object FamilyAddons : ClientModInitializer {
 
         // Discord
         DiscordListener.register()
+
+        // Player Disguise (config-driven, no register needed — mixin reads config directly)
+        // PlayerDisguise is passive; mixins call PlayerDisguise.isEnabled() / getMobId() / includesSelf()
 
         // Dev
         DevTools.register()

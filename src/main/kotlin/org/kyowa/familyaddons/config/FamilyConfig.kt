@@ -58,6 +58,10 @@ class FamilyConfig : Config() {
     var farmCalc = FarmCalcConfig()
 
     @Expose @JvmField
+    @Category(name = "Player Disguise", desc = "Replace player renders with a mob model")
+    var playerDisguise = PlayerDisguiseConfig()
+
+    @Expose @JvmField
     @Category(name = "Dev", desc = "Developer debug tools")
     var dev = DevConfig()
 }
