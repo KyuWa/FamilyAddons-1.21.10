@@ -23,6 +23,9 @@ object ItemPrices {
 
     private val http = HttpClient.newHttpClient()
     private val lowestBin = mutableMapOf<String, Double>()
+
+    // Expose for PetValueCommand
+    fun getLowestBin(): Map<String, Double> = synchronized(lowestBin) { lowestBin.toMap() }
     private val avgBin = mutableMapOf<String, Double>()
     private val bazaar = mutableMapOf<String, BazaarData>()
     private var lastBinFetch = 0L

@@ -54,6 +54,10 @@ class FamilyConfig : Config() {
     var keybinds = KeybindsConfig()
 
     @Expose @JvmField
+    @Category(name = "Pet Calc", desc = "STOPPED WORKING ON THIS SHIT FUCK THIS! [maybe later i do it]")
+    var farmCalc = FarmCalcConfig()
+
+    @Expose @JvmField
     @Category(name = "Dev", desc = "Developer debug tools")
     var dev = DevConfig()
 }

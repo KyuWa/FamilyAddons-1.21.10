@@ -42,7 +42,9 @@ object FamilyAddons : ClientModInitializer {
         SignMath.register()
         ItemPrices.register()
         GfsKeybinds.register()
-
+        PetValueCommand.register()
+        FarmCalcCommand.register()
+        
         // Party
         PartyTracker.register()
         PartyCommands.register()
