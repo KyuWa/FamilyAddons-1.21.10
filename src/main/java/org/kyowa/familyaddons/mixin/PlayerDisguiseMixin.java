@@ -12,8 +12,6 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.SpawnReason;
-import net.minecraft.entity.mob.MobEntity;
-import net.minecraft.entity.passive.AnimalEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.client.model.Model;
 import net.minecraft.registry.Registries;
@@ -22,7 +20,6 @@ import net.minecraft.util.Identifier;
 import org.kyowa.familyaddons.EntityRefAccessor;
 import org.kyowa.familyaddons.features.PlayerDisguise;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -34,8 +31,9 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         S extends LivingEntityRenderState,
         M extends Model<?>> {
 
-    @Shadow
-    protected abstract void renderLabelIfPresent(S state, Text text, MatrixStack matrices, OrderedRenderCommandQueue queue, CameraRenderState cameraRenderState);
+    // Cached reflection methods — found once per renderer instance
+    private static Method cachedCreateRenderState = null;
+    private static Method cachedRenderLabelIfPresent = null;
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -71,14 +69,12 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         }
         if (mob == null) return;
 
-        // Baby toggle — works on animals and most ageable mobs
+        // Baby toggle via reflection
         if (PlayerDisguise.INSTANCE.isBaby()) {
             try {
                 Method setBaby = mob.getClass().getMethod("setBaby", boolean.class);
                 setBaby.invoke(mob, true);
-            } catch (Exception ignored) {
-                // Mob doesn't support baby form, just skip silently
-            }
+            } catch (Exception ignored) {}
         }
 
         mob.setPos(player.getX(), player.getY(), player.getZ());
@@ -102,24 +98,27 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
                 (EntityRenderer<LivingEntity, LivingEntityRenderState>) dispatcher.getRenderer(mob);
         if (renderer == null) return;
 
-        LivingEntityRenderState mobState;
-        try {
-            Method createRenderState = null;
+        // Find createRenderState via reflection
+        if (cachedCreateRenderState == null) {
             Class<?> cls = renderer.getClass();
+            outer:
             while (cls != null) {
                 for (Method m : cls.getDeclaredMethods()) {
                     if (m.getParameterCount() == 0 &&
                             LivingEntityRenderState.class.isAssignableFrom(m.getReturnType())) {
-                        createRenderState = m;
-                        break;
+                        m.setAccessible(true);
+                        cachedCreateRenderState = m;
+                        break outer;
                     }
                 }
-                if (createRenderState != null) break;
                 cls = cls.getSuperclass();
             }
-            if (createRenderState == null) return;
-            createRenderState.setAccessible(true);
-            mobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
+        }
+        if (cachedCreateRenderState == null) return;
+
+        LivingEntityRenderState mobState;
+        try {
+            mobState = (LivingEntityRenderState) cachedCreateRenderState.invoke(renderer);
         } catch (Exception e) {
             return;
         }
@@ -149,10 +148,27 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             return;
         }
 
-        // Render nametag using the original player state — correct signature for 1.21.10
-        @SuppressWarnings("unchecked")
-        Text displayName = player.getDisplayName();
-        renderLabelIfPresent((S) playerState, displayName, matrixStack, queue, cameraRenderState);
+        // Find renderLabelIfPresent on the PLAYER renderer (which is `this`) via reflection
+        // It lives on EntityRenderer, not LivingEntityRenderer, so we walk up from `this`
+        if (cachedRenderLabelIfPresent == null) {
+            Class<?> cls = this.getClass();
+            outer:
+            while (cls != null) {
+                for (Method m : cls.getDeclaredMethods()) {
+                    if (m.getName().equals("renderLabelIfPresent")) {
+                        m.setAccessible(true);
+                        cachedRenderLabelIfPresent = m;
+                        break outer;
+                    }
+                }
+                cls = cls.getSuperclass();
+            }
+        }
+        if (cachedRenderLabelIfPresent != null) {
+            try {
+                cachedRenderLabelIfPresent.invoke(this, playerState, player.getDisplayName(), matrixStack, queue, cameraRenderState);
+            } catch (Exception ignored) {}
+        }
 
         ci.cancel();
     }
