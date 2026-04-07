@@ -34,6 +34,11 @@ class KuudraConfig {
     @ConfigEditorBoolean
     var requeueInfernal = true
 
+    @Expose @JvmField
+    @ConfigOption(name = "Check Party Size", desc = "Cancel requeue if party has fewer than 4 players.")
+    @ConfigEditorBoolean
+    var checkPartySize = true
+
     // DT Title accordion
     @Expose @JvmField
     @ConfigOption(name = "DT Title", desc = "")
@@ -46,9 +51,7 @@ class KuudraConfig {
     @ConfigEditorBoolean
     var dtTitle = true
 
-    @Expose @JvmField var dtTitleHudX = -1
-    @Expose @JvmField var dtTitleHudY = -1
-    @Expose @JvmField var dtTitleScale = "1.0"
+    @Expose @JvmField var dtTitleScale = "2.0"
 
     // Key Tracker accordion
     @Expose @JvmField

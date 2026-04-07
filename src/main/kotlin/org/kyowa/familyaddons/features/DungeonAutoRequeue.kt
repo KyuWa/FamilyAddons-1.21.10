@@ -8,7 +8,6 @@ import net.minecraft.client.MinecraftClient
 import net.minecraft.text.Text
 import org.kyowa.familyaddons.commands.TestCommand
 import org.kyowa.familyaddons.config.FamilyConfigManager
-import org.kyowa.familyaddons.party.PartyTracker
 
 object DungeonAutoRequeue {
 
@@ -21,6 +20,9 @@ object DungeonAutoRequeue {
     var inDungeon = false
     private var checkTicksRemaining = -1
 
+    // After inDungeon confirmed, wait 40 ticks then read tab list for party size
+    private var partySizeCheckTicks = -1
+
     private val DT_PATTERN = Regex(
         """^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*[!.]dt(?:\s.*)?$""",
         RegexOption.IGNORE_CASE
@@ -29,6 +31,7 @@ object DungeonAutoRequeue {
         """^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*[!.]undt\b""",
         RegexOption.IGNORE_CASE
     )
+    private val PARTY_SIZE_PATTERN = Regex("""Party\s*\((\d+)\)""")
 
     fun register() {
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
@@ -38,11 +41,13 @@ object DungeonAutoRequeue {
             requeueTicksLeft = 0
             inDungeon = false
             checkTicksRemaining = -1
+            partySizeCheckTicks = -1
         }
 
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             checkTicksRemaining = 200
             inDungeon = false
+            partySizeCheckTicks = -1
         }
 
         ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
@@ -61,9 +66,17 @@ object DungeonAutoRequeue {
                     if (lines.any { it.contains("The Catacombs", ignoreCase = true) }) {
                         inDungeon = true
                         checkTicksRemaining = -1
+                        partySizeCheckTicks = 40
                     } else if (checkTicksRemaining == 0) {
                         inDungeon = false
                     }
+                }
+            }
+
+            if (partySizeCheckTicks > 0) {
+                partySizeCheckTicks--
+                if (partySizeCheckTicks == 0) {
+                    checkPartySize(client)
                 }
             }
 
@@ -90,14 +103,29 @@ object DungeonAutoRequeue {
         }
     }
 
+    private fun checkPartySize(client: MinecraftClient) {
+        if (!FamilyConfigManager.config.dungeons.checkPartySize) return
+        val tabList = client.networkHandler?.playerList ?: return
+        val partyLine = tabList
+            .mapNotNull { it.displayName?.string?.replace(COLOR_CODE_REGEX, "") }
+            .firstOrNull { PARTY_SIZE_PATTERN.containsMatchIn(it) }
+            ?: return
+        val size = PARTY_SIZE_PATTERN.find(partyLine)?.groupValues?.get(1)?.toIntOrNull() ?: return
+        if (size < 5) {
+            cancelNextRequeue = true
+            chat("§e[FA] Dungeon requeue cancelled — only $size players in party.")
+            DungeonDtTitle.show("§cOnly §e$size §cplayers — §frequeue cancelled!")
+        }
+    }
+
     private fun handleMessage(plain: String) {
         val config = FamilyConfigManager.config.dungeons
 
         val dtMatch = DT_PATTERN.find(plain)
         if (dtMatch != null) {
             val name = dtMatch.groupValues[1].trim()
-            if (config.dtTitle) DungeonDtTitle.show("${TestCommand.getFormattedName(name)} §crequested §fDT!")
             if (inDungeon) {
+                if (config.dtTitle) DungeonDtTitle.show("${TestCommand.getFormattedName(name)} §crequested §fDT!")
                 cancelNextRequeue = true
                 dtRequester = name
             }
@@ -107,8 +135,8 @@ object DungeonAutoRequeue {
         val undtMatch = UNDT_PATTERN.find(plain)
         if (undtMatch != null) {
             val name = undtMatch.groupValues[1].trim()
-            if (config.dtTitle) DungeonDtTitle.show("${TestCommand.getFormattedName(name)} §acancelled §fDT!")
             if (inDungeon) {
+                if (config.dtTitle) DungeonDtTitle.show("${TestCommand.getFormattedName(name)} §acancelled §fDT!")
                 cancelNextRequeue = false
                 dtRequester = null
                 announcePartyMsg = null
@@ -131,15 +159,6 @@ object DungeonAutoRequeue {
                     dtRequester = null
                 }
                 return
-            }
-
-            if (config.checkPartySize) {
-                val size = PartyTracker.members.size
-                if (size in 1..4) {
-                    chat("§e[FA] Dungeon requeue cancelled — only $size players in party.")
-                    DungeonDtTitle.show("§cOnly §e$size §cplayers — §frequeue cancelled!")
-                    return
-                }
             }
 
             val delay = (config.requeueDelaySecs * 20).toInt()

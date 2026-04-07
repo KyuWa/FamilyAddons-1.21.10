@@ -36,9 +36,11 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
     private static final Map<Class<?>, Method> createRenderStateCache = new HashMap<>();
 
-    // Cached mob and the mob ID it was created for
     private static LivingEntity cachedMob = null;
     private static String cachedMobId = null;
+    private static Boolean cachedBaby = null;
+    private static LivingEntityRenderState cachedMobState = null;
+    private static Class<?> cachedRendererClass = null;
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -66,8 +68,10 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         EntityType<?> type = Registries.ENTITY_TYPE.get(id);
         if (type == null || type == EntityType.PLAYER) return;
 
-        // Reuse cached mob if the mob ID hasn't changed
-        if (cachedMob == null || !mobId.equals(cachedMobId)) {
+        boolean baby = PlayerDisguise.INSTANCE.isBaby();
+
+        // Recreate mob if ID changed or baby toggle changed
+        if (cachedMob == null || !mobId.equals(cachedMobId) || baby != Boolean.TRUE.equals(cachedBaby)) {
             try {
                 cachedMob = (LivingEntity) type.create(player.getEntityWorld(), SpawnReason.COMMAND);
             } catch (Exception e) {
@@ -76,8 +80,11 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             }
             if (cachedMob == null) return;
             cachedMobId = mobId;
+            cachedBaby = baby;
+            cachedMobState = null;
+            cachedRendererClass = null;
 
-            if (PlayerDisguise.INSTANCE.isBaby()) {
+            if (baby) {
                 if (cachedMob instanceof AnimalEntity animal) {
                     animal.setBreedingAge(-24000);
                 } else if (cachedMob instanceof ZombieEntity zombie) {
@@ -127,12 +134,17 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             createRenderStateCache.put(renderer.getClass(), createRenderState);
         }
 
-        LivingEntityRenderState mobState;
-        try {
-            mobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
-        } catch (Exception e) {
-            return;
+        // Recreate render state only if renderer class changed
+        if (cachedMobState == null || renderer.getClass() != cachedRendererClass) {
+            try {
+                cachedMobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
+                cachedRendererClass = renderer.getClass();
+            } catch (Exception e) {
+                return;
+            }
         }
+
+        LivingEntityRenderState mobState = cachedMobState;
 
         try {
             renderer.updateRenderState(mob, mobState, partialTick);

@@ -16,7 +16,6 @@ object DtTitle {
     private var titleText: String? = null
     private var titleTicks = 0
 
-    // Preview text shown in /fagui
     const val PREVIEW_TEXT = "§e[MVP++] Player §crequested §fDT!"
 
     fun show(text: String) {
@@ -30,18 +29,6 @@ object DtTitle {
     }
 
     fun getScale() = FamilyConfigManager.config.kuudra.dtTitleScale.toFloatOrNull()?.coerceAtLeast(1f) ?: 2f
-
-    fun resolvePos(sw: Int, sh: Int, scale: Float, textWidth: Int): Pair<Int, Int> {
-        return if (FamilyConfigManager.config.kuudra.dtTitleHudX == -1 || FamilyConfigManager.config.kuudra.dtTitleHudY == -1) {
-            // Auto-center in screen coords
-            val x = ((sw - textWidth * scale) / 2f).toInt()
-            val y = (sh / 2f - 20f * scale).toInt()
-            x to y
-        } else {
-            // Saved as raw screen pixels
-            FamilyConfigManager.config.kuudra.dtTitleHudX to FamilyConfigManager.config.kuudra.dtTitleHudY
-        }
-    }
 
     fun register() {
         HudRenderCallback.EVENT.register { context, _ ->
@@ -65,7 +52,10 @@ object DtTitle {
             val sh = context.scaledWindowHeight
             val plain = text.replace(COLOR_CODE_REGEX, "")
             val tw = renderer.getWidth(plain)
-            val (x, y) = resolvePos(sw, sh, scale, tw)
+
+            val x = ((sw - tw * scale) / 2f).toInt()
+            val y = (sh / 2f - 20f * scale).toInt()
+
             val color = (alpha shl 24) or 0xFFFFFF
 
             val matrices = context.matrices

@@ -113,62 +113,6 @@ class HudEditorScreen : Screen(Text.literal("FA HUD Editor")) {
             }
         ))
 
-        // Kuudra DT Title
-        val dtScale = DtTitle.getScale()
-        val dtPlain = DtTitle.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")
-        val dtW = tr.getWidth(dtPlain)
-        val dtH = 10
-        val dtX = if (FamilyConfigManager.config.kuudra.dtTitleHudX == -1)
-            ((sw - dtW * dtScale) / 2f).toInt()
-        else FamilyConfigManager.config.kuudra.dtTitleHudX
-        val dtY = if (FamilyConfigManager.config.kuudra.dtTitleHudY == -1)
-            (sh / 2f - 20f).toInt()
-        else FamilyConfigManager.config.kuudra.dtTitleHudY
-
-        elements.add(HudElement(
-            id = "dtTitle", label = "Kuudra DT Title",
-            x = dtX, y = dtY,
-            w = dtW, h = dtH,
-            scale = dtScale,
-            canScale = true,
-            onSave = { elem ->
-                FamilyConfigManager.config.kuudra.dtTitleHudX = elem.x
-                FamilyConfigManager.config.kuudra.dtTitleHudY = elem.y
-                FamilyConfigManager.config.kuudra.dtTitleScale = "%.1f".format(elem.scale)
-            },
-            renderContent = { ctx, _ ->
-                ctx.drawText(tr, DtTitle.PREVIEW_TEXT, 0, 0, 0xFFFFFFFF.toInt(), true)
-            }
-        ))
-
-        // Dungeon DT Title
-        val dunScale = DungeonDtTitle.getScale()
-        val dunPlain = DungeonDtTitle.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")
-        val dunW = tr.getWidth(dunPlain)
-        val dunH = 10
-        val dunX = if (FamilyConfigManager.config.dungeons.dungeonDtTitleHudX == -1)
-            ((sw - dunW * dunScale) / 2f).toInt()
-        else FamilyConfigManager.config.dungeons.dungeonDtTitleHudX
-        val dunY = if (FamilyConfigManager.config.dungeons.dungeonDtTitleHudY == -1)
-            (sh / 2f - 40f).toInt()
-        else FamilyConfigManager.config.dungeons.dungeonDtTitleHudY
-
-        elements.add(HudElement(
-            id = "dungeonDtTitle", label = "Dungeon DT Title",
-            x = dunX, y = dunY,
-            w = dunW, h = dunH,
-            scale = dunScale,
-            canScale = true,
-            onSave = { elem ->
-                FamilyConfigManager.config.dungeons.dungeonDtTitleHudX = elem.x
-                FamilyConfigManager.config.dungeons.dungeonDtTitleHudY = elem.y
-                FamilyConfigManager.config.dungeons.dungeonDtTitleScale = "%.1f".format(elem.scale)
-            },
-            renderContent = { ctx, _ ->
-                ctx.drawText(tr, DungeonDtTitle.PREVIEW_TEXT, 0, 0, 0xFFFFFFFF.toInt(), true)
-            }
-        ))
-
         // Pickobulus Timer
         val pbScale = PickaxeAbility.getScale()
         val pbPlain = PickaxeAbility.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")

@@ -187,6 +187,7 @@ object AutoRequeue {
     }
 
     private fun checkPartySize() {
+        if (!FamilyConfigManager.config.kuudra.checkPartySize) return
         val size = PartyTracker.members.size
         FamilyAddons.LOGGER.info("[FA] Party size at run start: $size")
         if (size in 1..3) {

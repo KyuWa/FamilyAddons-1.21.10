@@ -26,7 +26,5 @@ class DungeonsConfig {
     @ConfigEditorSlider(minValue = 0f, maxValue = 10f, minStep = 1f)
     var requeueDelaySecs = 0f
 
-    @Expose @JvmField var dungeonDtTitleHudX = -1
-    @Expose @JvmField var dungeonDtTitleHudY = -1
-    @Expose @JvmField var dungeonDtTitleScale = "1.0"
+    @Expose @JvmField var dungeonDtTitleScale = "2.0"
 }
