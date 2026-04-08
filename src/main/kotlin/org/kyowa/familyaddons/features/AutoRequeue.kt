@@ -6,167 +6,193 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.MinecraftClient
 import net.minecraft.text.Text
-import org.kyowa.familyaddons.FamilyAddons
 import org.kyowa.familyaddons.commands.TestCommand
 import org.kyowa.familyaddons.config.FamilyConfigManager
-import org.kyowa.familyaddons.party.PartyTracker
 
 object AutoRequeue {
 
-    private var cancelNextRequeue = false
-    private var currentTier       = "infernal"
-    private var diedThisRun       = false
-    private var cancelReason      = ""
-    private var dtRequester: String? = null
-    private var announcePartyMsg: String? = null
-    private var announceTicks     = 0
-    private var waitingRequeue    = false
-    private var requeueTicksLeft  = 0
-    var inKuudra                  = false
-
-    private var checkTicksRemaining = -1
-
-    private val DT_PATTERN = Regex(
-        """^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*[!.]dt(?:\s.*)?$""",
-        RegexOption.IGNORE_CASE
-    )
-    private val TIER_PATTERN = Regex("""(Basic|Hot|Burning|Fiery|Infernal) Tier""", RegexOption.IGNORE_CASE)
-    private val UNDT_PATTERN = Regex(
-        """^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*[!.]undt\b""",
+    private val TIER_PATTERN = Regex(
+        """(?:\[[^\]]+\]\s+)?(\w+)\s+entered Kuudra's Hollow, (Basic|Hot|Burning|Fiery|Infernal) Tier!""",
         RegexOption.IGNORE_CASE
     )
 
+    // ── Kuudra state ──────────────────────────────────────────
+    private var inKuudra              = false
+    private var kuudraTier            = "infernal"
+    private var kuudraCancelRequeue   = false
+    private var kuudraDtRequester: String? = null
+    private var kuudraDtAnnounceName: String? = null
+    private var kuudraDtAnnounceTicks = 0
+    private var kuudraDiedThisRun     = false
+    private var kuudraWaiting         = false
+    private var kuudraWaitTicks       = 0
+
+    // ── Dungeon state ─────────────────────────────────────────
+    private val dungeonNeedsDowntime  = java.util.Collections.newSetFromMap<String>(java.util.concurrent.ConcurrentHashMap())
+    private var inDungeon             = false
+    private var checkTicksRemaining   = -1
+    private var dungeonRequeueTicks   = 0
+
+    // ── Reset ─────────────────────────────────────────────────
+    private fun resetAll() {
+        inKuudra               = false
+        kuudraTier             = "infernal"
+        kuudraCancelRequeue    = false
+        kuudraDtRequester      = null
+        kuudraDtAnnounceName   = null
+        kuudraDtAnnounceTicks  = 0
+        kuudraDiedThisRun      = false
+        kuudraWaiting          = false
+        kuudraWaitTicks        = 0
+
+        inDungeon              = false
+        dungeonNeedsDowntime.clear()
+        dungeonRequeueTicks    = 0
+        checkTicksRemaining    = -1
+    }
+
+    // ── Register ──────────────────────────────────────────────
     fun register() {
-        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            inKuudra = false
-            checkTicksRemaining = -1
-        }
-
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> resetAll() }
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
+            resetAll()
             checkTicksRemaining = 200
-            inKuudra = false
         }
 
         ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
-            val plain = message.string.replace(COLOR_CODE_REGEX, "").trim()
-            handleMessage(plain)
+            val raw = message.string
+            val plain = raw.replace(COLOR_CODE_REGEX, "").trim()
+            handleKuudra(raw, plain)
+            handleDungeon(plain)
             true
         }
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             DtTitle.tick()
+            DungeonDtTitle.tick()
+            tickKuudra()
+            tickDungeon(client)
+        }
+    }
 
-            if (checkTicksRemaining > 0) {
-                checkTicksRemaining--
-                if (checkTicksRemaining % 20 == 0) {
-                    val lines = DevTools.getScoreboardLines(client)
-                    if (lines.any { it.contains("Kuudra", ignoreCase = true) }) {
-                        inKuudra = true
-                        checkTicksRemaining = -1
-                        FamilyAddons.LOGGER.info("[FA] Kuudra detected via scoreboard")
-                    } else if (checkTicksRemaining == 0) {
-                        inKuudra = false
-                        FamilyAddons.LOGGER.info("[FA] Not in Kuudra after 10s check")
-                    }
+    // ── Kuudra tick ───────────────────────────────────────────
+    private fun tickKuudra() {
+        if (kuudraDtAnnounceTicks > 0) {
+            kuudraDtAnnounceTicks--
+            if (kuudraDtAnnounceTicks == 0) {
+                kuudraDtAnnounceName?.let {
+                    MinecraftClient.getInstance().player?.networkHandler?.sendChatMessage("/pc $it requested dt!")
                 }
+                kuudraDtAnnounceName = null
             }
-
-            if (announceTicks > 0) {
-                announceTicks--
-                if (announceTicks == 0) {
-                    announcePartyMsg?.let {
-                        MinecraftClient.getInstance().player?.networkHandler?.sendChatMessage("/pc $it requested dt!")
-                    }
-                    announcePartyMsg = null
-                }
-            }
-
-            if (waitingRequeue) {
-                if (requeueTicksLeft > 0) {
-                    requeueTicksLeft--
-                } else {
-                    waitingRequeue = false
-                    if (!cancelNextRequeue) {
-                        MinecraftClient.getInstance().player?.networkHandler?.sendChatCommand("instancerequeue")
-                    }
-                }
+        }
+        if (kuudraWaiting) {
+            if (kuudraWaitTicks > 0) {
+                kuudraWaitTicks--
+            } else {
+                kuudraWaiting = false
+                MinecraftClient.getInstance().player?.networkHandler?.sendChatCommand("instancerequeue")
             }
         }
     }
 
-    private fun handleMessage(plain: String) {
+    // ── Dungeon tick ──────────────────────────────────────────
+    private fun tickDungeon(client: MinecraftClient) {
+        if (checkTicksRemaining > 0) {
+            checkTicksRemaining--
+            if (checkTicksRemaining % 20 == 0) {
+                val lines = DevTools.getScoreboardLines(client)
+                if (lines.any { it.contains("The Catacombs", ignoreCase = true) }) {
+                    inDungeon = true
+                    checkTicksRemaining = -1
+                } else if (checkTicksRemaining == 0) {
+                    inDungeon = false
+                }
+            }
+        }
+        if (dungeonRequeueTicks > 0) {
+            dungeonRequeueTicks--
+            if (dungeonRequeueTicks == 0) {
+                MinecraftClient.getInstance().player?.networkHandler?.sendChatCommand("instancerequeue")
+            }
+        }
+    }
+
+    // ── Kuudra message handler ────────────────────────────────
+    private fun handleKuudra(raw: String, plain: String) {
         val config = FamilyConfigManager.config.kuudra
         val player = MinecraftClient.getInstance().player ?: return
         val selfName = player.name.string
 
-        val dtMatch = DT_PATTERN.find(plain)
-        if (dtMatch != null) {
-            val name = dtMatch.groupValues[1].trim()
-            FamilyAddons.LOGGER.info("[FA] Kuudra !dt detected from '$name' | inKuudra=$inKuudra | plain='$plain'")
-            if (inKuudra) {
-                if (config.dtTitle) DtTitle.show("§e$name §crequested §fDT!")
-                cancelNextRequeue = true
-                dtRequester = name
-                cancelReason = "dt"
-            }
+        val tierMatch = TIER_PATTERN.find(plain)
+        if (tierMatch != null) {
+            kuudraTier          = tierMatch.groupValues[2].lowercase()
+            kuudraCancelRequeue = false
+            kuudraDiedThisRun   = false
+            inKuudra            = true
             return
         }
 
-        val undtMatch = UNDT_PATTERN.find(plain)
-        if (undtMatch != null) {
-            val name = undtMatch.groupValues[1].trim()
-            FamilyAddons.LOGGER.info("[FA] Kuudra !undt detected from '$name' | inKuudra=$inKuudra")
-            if (inKuudra) {
-                if (config.dtTitle) DtTitle.show("${TestCommand.getFormattedName(name)} §acancelled §fDT!")
-                cancelNextRequeue = false
-                cancelReason = ""
-                dtRequester = null
-                announcePartyMsg = null
-                announceTicks = 0
+        val partyMatch = Regex("""^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*(.+)$""", RegexOption.IGNORE_CASE).find(plain)
+        if (partyMatch != null) {
+            val name = partyMatch.groupValues[1].trim()
+            val msg  = partyMatch.groupValues[2].trim().lowercase()
+
+            if (msg == "!dt" || msg == "dt" || msg.startsWith("!dt")) {
+                if (inKuudra) {
+                    if (config.dtTitle) DtTitle.show("${TestCommand.getFormattedName(name)} §crequested §fDT!")
+                    kuudraCancelRequeue = true
+                    kuudraDtRequester   = name
+                    kuudraWaiting       = false
+                    kuudraWaitTicks     = 0
+                }
+                return
+            }
+
+            if (msg == "!undt" || msg == "undt") {
+                if (inKuudra) {
+                    if (config.dtTitle) DtTitle.show("${TestCommand.getFormattedName(name)} §acancelled §fDT!")
+                    kuudraCancelRequeue   = false
+                    kuudraDtRequester     = null
+                    kuudraDtAnnounceName  = null
+                    kuudraDtAnnounceTicks = 0
+                }
+                return
             }
             return
         }
 
         if (!config.autoRequeue) return
 
-        val tierMatch = TIER_PATTERN.find(plain)
-        if (tierMatch != null && plain.contains("Tier")) {
-            currentTier = tierMatch.groupValues[1].lowercase()
-            cancelNextRequeue = false
-            inKuudra = true
-            return
-        }
+        if (plain == "KUUDRA DOWN!" && !raw.contains(" >") && !raw.contains(":")) {
+            if (!inKuudra) return
+            inKuudra = false
 
-        if (plain.contains("Okay adventurers, I will go and fish up Kuudra")) {
-            inKuudra = true
-            checkPartySize()
-            return
-        }
-
-        if (plain == "KUUDRA DOWN!") {
-            if (cancelNextRequeue) {
-                cancelNextRequeue = false
-                if (cancelReason == "dt" && dtRequester != null) {
-                    announcePartyMsg = dtRequester
-                    announceTicks = 40
+            if (kuudraCancelRequeue) {
+                kuudraCancelRequeue = false
+                kuudraWaiting       = false
+                kuudraWaitTicks     = 0
+                if (kuudraDtRequester != null) {
+                    kuudraDtAnnounceName  = kuudraDtRequester
+                    kuudraDtAnnounceTicks = 40
                 }
-                dtRequester = null
-                cancelReason = ""
+                kuudraDtRequester = null
                 return
             }
-            val tierAllowed = when (currentTier) {
+
+            val tierAllowed = when (kuudraTier) {
                 "basic"    -> config.requeueBasic
                 "hot"      -> config.requeueHot
                 "burning"  -> config.requeueBurning
                 "fiery"    -> config.requeueFiery
-                "infernal" -> config.requeueInfernal
-                else -> false
+                else       -> config.requeueInfernal
             }
             if (!tierAllowed) return
-            if (diedThisRun) {
-                diedThisRun = false
-                waitingRequeue = true
-                requeueTicksLeft = 40
+
+            if (kuudraDiedThisRun) {
+                kuudraDiedThisRun = false
+                kuudraWaiting     = true
+                kuudraWaitTicks   = 40
             } else {
                 player.networkHandler.sendChatCommand("instancerequeue")
             }
@@ -174,27 +200,56 @@ object AutoRequeue {
         }
 
         if (plain.contains("left the party", ignoreCase = true) && inKuudra) {
-            cancelNextRequeue = true
-            cancelReason = "leave"
-            dtRequester = null
-            chat("§e[FA] Party member left — requeue cancelled.")
+            kuudraCancelRequeue = true
+            kuudraDtRequester   = null
+            chat("§e[FA] Party member left — Kuudra requeue cancelled.")
             return
         }
 
         if (plain == "$selfName was FINAL KILLED by Kuudra!") {
-            diedThisRun = true
+            kuudraDiedThisRun = true
         }
     }
 
-    private fun checkPartySize() {
-        if (!FamilyConfigManager.config.kuudra.checkPartySize) return
-        val size = PartyTracker.members.size
-        FamilyAddons.LOGGER.info("[FA] Party size at run start: $size")
-        if (size in 1..3) {
-            cancelNextRequeue = true
-            cancelReason = "size"
-            chat("§e[FA] Auto requeue disabled — only $size players in party.")
-            DtTitle.show("§cOnly §e$size §cplayers — §frequeue cancelled!")
+    // ── Dungeon message handler ───────────────────────────────
+    private fun handleDungeon(plain: String) {
+        val config = FamilyConfigManager.config.dungeons
+        val player = MinecraftClient.getInstance().player ?: return
+
+        val partyMatch = Regex("""^Party\s*[>»]\s*(?:\[[^\]]+\]\s*)?([A-Za-z0-9_]{3,16})\s*:\s*(.+)$""", RegexOption.IGNORE_CASE).find(plain)
+        if (partyMatch != null) {
+            val name = partyMatch.groupValues[1].trim()
+            val msg  = partyMatch.groupValues[2].trim().lowercase()
+
+            if (msg == "!r" || msg == "r" || msg == "!undt" || msg == "undt") {
+                if (!dungeonNeedsDowntime.remove(name)) return
+                if (dungeonNeedsDowntime.isEmpty()) {
+                    dungeonRequeueTicks = (config.requeueDelaySecs * 20).toInt().coerceAtLeast(1)
+                }
+                return
+            }
+
+            if (msg == "!dt" || msg == "dt" || msg.startsWith("!dt")) {
+                if (config.dtTitle) DungeonDtTitle.show("${TestCommand.getFormattedName(name)} §crequested §fDT!")
+                dungeonNeedsDowntime.add(name)
+                return
+            }
+
+            return
+        }
+
+        if (!config.autoRequeue) return
+
+        if (Regex("""^ *> EXTRA STATS <$""").matches(plain)) {
+            if (!inDungeon) return
+            inDungeon = false
+            if (dungeonNeedsDowntime.isEmpty()) {
+                dungeonRequeueTicks = (config.requeueDelaySecs * 20).toInt().coerceAtLeast(1)
+            } else {
+                player.networkHandler.sendChatMessage("/pc ${dungeonNeedsDowntime.joinToString(", ")} needs downtime")
+                dungeonNeedsDowntime.clear()
+            }
+            return
         }
     }
 

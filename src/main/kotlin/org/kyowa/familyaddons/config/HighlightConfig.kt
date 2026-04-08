@@ -23,9 +23,4 @@ class HighlightConfig {
     @ConfigOption(name = "Drawing Style", desc = "ESP Box draws a wireframe box. Outline draws around the entity model.")
     @ConfigEditorDropdown(values = ["ESP Box", "Outline"])
     var drawingStyle = 0
-
-    @Expose @JvmField
-    @ConfigOption(name = "Show Through Walls", desc = "Show highlight even through blocks.")
-    @ConfigEditorBoolean
-    var throughWalls = true
 }

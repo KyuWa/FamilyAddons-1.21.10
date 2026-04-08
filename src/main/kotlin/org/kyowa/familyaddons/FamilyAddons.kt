@@ -67,7 +67,6 @@ object FamilyAddons : ClientModInitializer {
 
         // Dungeons
         DungeonDtTitle.register()
-        DungeonAutoRequeue.register()
 
         // Mining
         PickaxeAbility.register()

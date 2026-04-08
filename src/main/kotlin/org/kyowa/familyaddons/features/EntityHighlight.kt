@@ -55,7 +55,6 @@ object EntityHighlight {
         return entity
     }
 
-    // Returns ARGB color int for outline mode, 0 if not highlighted
     fun getOutlineColor(entity: Entity): Int {
         val config = FamilyConfigManager.config.highlight
         if (!config.enabled) return 0
@@ -103,7 +102,6 @@ object EntityHighlight {
         val config = FamilyConfigManager.config.highlight
         if (!config.enabled) return
         if (highlighted.isEmpty()) return
-        // Skip box rendering if outline mode
         if (config.drawingStyle == 1) return
 
         val immediate = MinecraftClient.getInstance()
@@ -134,11 +132,9 @@ object EntityHighlight {
 
         drawAll(1.0f)
 
-        if (config.throughWalls) {
-            GL11.glDisable(GL11.GL_DEPTH_TEST)
-            drawAll(0.3f)
-            GL11.glEnable(GL11.GL_DEPTH_TEST)
-        }
+        GL11.glDisable(GL11.GL_DEPTH_TEST)
+        drawAll(0.3f)
+        GL11.glEnable(GL11.GL_DEPTH_TEST)
 
         matrices.pop()
     }

@@ -25,7 +25,7 @@ class MiningConfig {
 
     @Expose @JvmField
     @ConfigAccordionId(id = 20)
-    @ConfigOption(name = "Corpse Announce", desc = "Announce corpse types to party chat when entering a mineshaft.")
+    @ConfigOption(name = "Corpse Announce", desc = "Announce corpse coords to party chat when you loot a corpse.")
     @ConfigEditorBoolean
     var corpseAnnounce = true
 

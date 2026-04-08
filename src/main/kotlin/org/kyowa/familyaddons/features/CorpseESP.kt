@@ -26,7 +26,6 @@ object CorpseESP {
 
     val cachedCorpses = mutableListOf<Corpse>()
 
-    private val CORPSE_ENTRY_REGEX = Regex("""^\s*(\w+):\s*(LOOTED|NOT LOOTED)$""")
     private val LOOT_MESSAGE_REGEX = Regex("""^\s*(.+?)\s+CORPSE LOOT!\s*$""")
 
     data class HelmetInfo(val label: String, val r: Float, val g: Float, val b: Float)
@@ -39,31 +38,7 @@ object CorpseESP {
     )
 
     private var lastArea: String? = null
-    private var hasAnnounced = false
-    private var announceTick = 0
     private var inMineshaft = false
-
-    private fun getFrozenCorpses(): List<Pair<String, Boolean>>? {
-        val tabList = MinecraftClient.getInstance().networkHandler?.playerList ?: return null
-        val corpses = mutableListOf<Pair<String, Boolean>>()
-        var inCorpseSection = false
-
-        for (entry in tabList) {
-            val raw = entry.displayName?.string?.replace(COLOR_CODE_REGEX, "")?.trim() ?: continue
-            if (raw.isEmpty()) continue
-            if (raw == "Frozen Corpses:") { inCorpseSection = true; continue }
-            if (inCorpseSection) {
-                val match = CORPSE_ENTRY_REGEX.find(raw)
-                if (match != null) {
-                    corpses.add(match.groupValues[1] to (match.groupValues[2] == "LOOTED"))
-                } else {
-                    break
-                }
-            }
-        }
-
-        return if (corpses.isNotEmpty()) corpses else null
-    }
 
     fun hasCachedCorpses(): Boolean = cachedCorpses.any { !it.looted }
 
@@ -92,8 +67,6 @@ object CorpseESP {
     fun register() {
         var areaCheckTick = 0
         ClientTickEvents.END_CLIENT_TICK.register { client ->
-            val player = client.player ?: return@register
-
             var currentArea = lastArea
             if (areaCheckTick++ % 10 == 0) {
                 val tabList = client.networkHandler?.playerList ?: return@register
@@ -108,36 +81,11 @@ object CorpseESP {
                 lastArea = currentArea
                 if (currentArea == "Mineshaft") {
                     inMineshaft = true
-                    hasAnnounced = false
-                    announceTick = 0
                     cachedCorpses.clear()
                 } else {
                     inMineshaft = false
-                    hasAnnounced = false
-                    announceTick = 0
                 }
             }
-
-            if (!FamilyConfigManager.config.mining.corpseAnnounce) return@register
-            if (!inMineshaft || hasAnnounced) return@register
-
-            announceTick++
-            if (announceTick < 80) return@register
-
-            hasAnnounced = true
-            val corpses = getFrozenCorpses()
-
-            val lapisCount = corpses?.count { it.first == "Lapis" } ?: 0
-            val hasVanguard = corpses?.any { it.first == "Vanguard" } ?: false
-
-            if (lapisCount == 0 && !hasVanguard) return@register
-
-            val msg = when {
-                hasVanguard && lapisCount == 0 -> "/pc Vanguard Mineshaft"
-                hasVanguard -> "/pc Vanguard Mineshaft | Corpses: ${lapisCount}x Lapis"
-                else -> "/pc Corpses: ${lapisCount}x Lapis"
-            }
-            player.networkHandler.sendChatMessage(msg)
         }
 
         var scanTick = 0
@@ -153,7 +101,6 @@ object CorpseESP {
 
                 val ex = entity.x; val ey = entity.y; val ez = entity.z
 
-                // Skip if already tracked (looted or not)
                 if (cachedCorpses.any { c ->
                         Math.abs(c.x - ex) < 2 && Math.abs(c.y - ey) < 2 && Math.abs(c.z - ez) < 2
                     }) continue
@@ -170,15 +117,14 @@ object CorpseESP {
 
         ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
             val plain = message.string.replace(COLOR_CODE_REGEX, "").trim()
-            val match = LOOT_MESSAGE_REGEX.find(plain)
-            if (match != null) {
-                val corpseName = match.groupValues[1].trim()
+            val lootMatch = LOOT_MESSAGE_REGEX.find(plain)
+            if (lootMatch != null) {
+                val corpseName = lootMatch.groupValues[1].trim()
                 val client = MinecraftClient.getInstance()
                 val player = client.player ?: return@register true
 
                 val px = player.x; val py = player.y; val pz = player.z
 
-                // Mark closest matching corpse as looted
                 cachedCorpses
                     .filter { !it.looted && it.label.equals(corpseName, ignoreCase = true) }
                     .minByOrNull { c ->
@@ -203,8 +149,6 @@ object CorpseESP {
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             cachedCorpses.clear()
             lastArea = null
-            hasAnnounced = false
-            announceTick = 0
             inMineshaft = false
         }
     }
@@ -232,7 +176,7 @@ object CorpseESP {
         val immediate2 = client.bufferBuilders?.entityVertexConsumers ?: run { GL11.glEnable(GL11.GL_DEPTH_TEST); matrices.pop(); return }
         for (c in visible) {
             val box = Box(c.x - 0.5, c.y, c.z - 0.5, c.x + 0.5, c.y + 2.0, c.z + 0.5)
-            VertexRendering.drawBox(matrices.peek(), immediate2.getBuffer(RenderLayer.getLines()), box, c.r, c.g, c.b, 1.0f)
+            VertexRendering.drawBox(matrices.peek(), immediate2.getBuffer(RenderLayer.getLines()), box, c.r, c.g, c.b, 0.3f)
         }
         immediate2.draw(RenderLayer.getLines())
         GL11.glEnable(GL11.GL_DEPTH_TEST)
