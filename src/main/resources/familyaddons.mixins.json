@@ -11,7 +11,8 @@
     "SignEditMixin",
     "EntityOutlineMixin",
     "EntityCaptureMixin",
-    "PlayerDisguiseMixin"
+    "PlayerDisguiseMixin",
+    "HotbarScrollMixin"
   ],
   "injectors": {
     "defaultRequire": 1

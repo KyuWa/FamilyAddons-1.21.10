@@ -19,4 +19,9 @@ class UtilitiesConfig {
     @ConfigOption(name = "Item Prices", desc = "Show SkyBlock item prices in tooltips (AH, BIN, Bazaar, Pets).")
     @ConfigEditorBoolean
     var itemPrices = true
+
+    @Expose @JvmField
+    @ConfigOption(name = "Lock Hotbar Scroll", desc = "Prevent hotbar scroll from wrapping around (slot 1 won't go to slot 9 and vice versa).")
+    @ConfigEditorBoolean
+    var lockHotbarScroll = true
 }
