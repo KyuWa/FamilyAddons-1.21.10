@@ -238,6 +238,13 @@ object AutoRequeue {
             return
         }
 
+        // Party leave — cancel dungeon requeue
+        if (plain.contains("left the party", ignoreCase = true)) {
+            dungeonNeedsDowntime.clear()
+            dungeonRequeueTicks = 0
+            return
+        }
+
         if (!config.autoRequeue) return
 
         if (Regex("""^ *> EXTRA STATS <$""").matches(plain)) {
