@@ -290,7 +290,7 @@ object BestiaryTracker {
 
         // Resolve effective mob name: manual text box takes priority over auto-grabbed
         val effectiveTarget = if (cfg.mobName.isNotBlank()) target
-        else if (cfg.autoMobName && autoMobName.isNotBlank()) autoMobName
+        else if (cfg.autoMobName && autoMobName.isNotBlank()) autoMobName.lowercase()
         else return  // nothing to track
 
         // Fix 3: detect mob name change → reset counts, load saved kills for new mob
@@ -410,7 +410,7 @@ object BestiaryTracker {
             // Strip the tier number and value, keep just the mob name
             val trimmed = stripped.trimStart()
             // Remove trailing " N: xxx/yyy" or " N: MAX" — everything from last digit-colon onwards
-            val mobName = trimmed.replace(Regex("\\s+\\d+:\\s+.*$"), "").trim().lowercase()
+            val mobName = trimmed.replace(Regex("\\s+\\d+:\\s+.*$"), "").trim()
             if (mobName.isNotBlank() && mobName != autoMobName) {
                 autoMobName = mobName
                 FamilyAddons.LOGGER.info("BestiaryTracker: auto-grabbed mob name '$autoMobName' from tablist")

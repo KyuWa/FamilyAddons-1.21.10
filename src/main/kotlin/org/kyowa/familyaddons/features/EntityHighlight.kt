@@ -49,10 +49,11 @@ object EntityHighlight {
         val bestiaryMob = FamilyConfigManager.config.bestiary.mobName.trim().lowercase()
         if (bestiaryMob.isNotBlank() && bestiaryMob !in names) names.add(bestiaryMob)
 
-        // Source 3: zone highlight non-maxed mobs
+        // Source 3: zone highlight non-maxed mobs (lowercase for entity name matching)
         if (FamilyConfigManager.config.bestiary.zoneHighlightEnabled) {
             BestiaryZoneHighlight.activeMobNames.forEach { mob ->
-                if (mob.isNotBlank() && mob !in names) names.add(mob)
+                val lower = mob.lowercase()
+                if (lower.isNotBlank() && lower !in names) names.add(lower)
             }
         }
 
