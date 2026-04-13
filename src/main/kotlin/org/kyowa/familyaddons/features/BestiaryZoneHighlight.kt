@@ -1,17 +1,16 @@
 package org.kyowa.familyaddons.features
 
 import com.google.gson.JsonParser
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
-import net.minecraft.client.MinecraftClient
-import org.kyowa.familyaddons.FamilyAddons
-import org.kyowa.familyaddons.KeyFetcher
-import org.kyowa.familyaddons.config.FamilyConfigManager
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.atomic.AtomicBoolean
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import net.minecraft.client.MinecraftClient
+import org.kyowa.familyaddons.COLOR_CODE_REGEX
+import org.kyowa.familyaddons.FamilyAddons
+import org.kyowa.familyaddons.config.FamilyConfigManager
 
 object BestiaryZoneHighlight {
 
@@ -82,12 +81,17 @@ object BestiaryZoneHighlight {
         "Kuudra"                to "kuudra"
     )
 
+    // Full list of mob names for the selected zone (before max filtering)
+    // Set by refresh() every 30s. checkMaxFromTablist() filters this down to activeMobNames.
+    @Volatile var allZoneMobNames: Set<String> = emptySet()
+        private set
+
+    // Filtered list — allZoneMobNames minus any that show MAX in the tablist
     @Volatile var activeMobNames: Set<String> = emptySet()
         private set
 
     private val httpClient = HttpClient.newHttpClient()
     private var tickCounter = 0
-    private val fetching = AtomicBoolean(false)
 
     private data class MobEntry(val displayName: String, val mobIds: List<String>, val maxKills: Long)
     private var repoData: Map<String, List<MobEntry>> = emptyMap()
@@ -111,7 +115,6 @@ object BestiaryZoneHighlight {
     }
 
     fun refresh() {
-        if (fetching.getAndSet(true)) return
         CompletableFuture.runAsync {
             try {
                 if (!repoLoaded) loadRepo()
@@ -133,72 +136,88 @@ object BestiaryZoneHighlight {
                     return@runAsync
                 }
 
-                val apiKey = KeyFetcher.getApiKey()
-                if (apiKey.isNullOrBlank()) {
-                    // No API key — highlight all mobs in zone (can't check if maxed)
-                    activeMobNames = zoneMobs.map { mob ->
-                        mob.displayName.replace(Regex("§[0-9a-fk-or]"), "").trim().lowercase()
-                    }.toSet()
-                    MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
-                    return@runAsync
-                }
-
-                val player = MinecraftClient.getInstance().player ?: return@runAsync
-                val uuid = player.gameProfile.id.toString().replace("-", "")
-
-                val data = get("https://api.hypixel.net/v2/skyblock/profiles?uuid=$uuid&key=$apiKey")
-                    ?: run { activeMobNames = zoneMobs.map { mob ->
-                        mob.displayName.replace(Regex("§[0-9a-fk-or]"), "").trim().lowercase()
-                    }.toSet()
-                        MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
-                        return@runAsync }
-
-                if (data.get("success")?.asBoolean != true) { activeMobNames = emptySet(); return@runAsync }
-
-                val profiles = data.getAsJsonArray("profiles") ?: run { activeMobNames = emptySet(); return@runAsync }
-                val profile = profiles.map { it.asJsonObject }
-                    .firstOrNull { it.get("selected")?.asBoolean == true }
-                    ?: profiles.lastOrNull()?.asJsonObject
-                    ?: run { activeMobNames = emptySet(); return@runAsync }
-
-                val member = profile.getAsJsonObject("members")?.getAsJsonObject(uuid)
-                    ?: run { activeMobNames = emptySet(); return@runAsync }
-
-                val killsObj = member.getAsJsonObject("bestiary")?.getAsJsonObject("kills")
-
                 // Mobs whose in-game entity name differs from the bestiary display name
                 val NAME_REMAPS = mapOf(
                     "sneaky creeper" to "creeper"
                 )
 
-                val notMaxed = mutableSetOf<String>()
+                // Build full zone mob name set (with name remaps applied)
+                val fullSet = mutableSetOf<String>()
                 for (mob in zoneMobs) {
-                    if (!isMobMaxed(mob, killsObj)) {
-                        val cleanName = mob.displayName
-                            .replace(Regex("§[0-9a-fk-or]"), "")
-                            .trim()
-                            .lowercase()
-                        notMaxed.add(NAME_REMAPS[cleanName] ?: cleanName)
-                    }
+                    val cleanName = mob.displayName
+                        .replace(Regex("§[0-9a-fk-or]"), "")
+                        .trim()
+                        .lowercase()
+                    fullSet.add(NAME_REMAPS[cleanName] ?: cleanName)
                 }
-                activeMobNames = notMaxed
-                MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
-                FamilyAddons.LOGGER.info("BestiaryZoneHighlight: $zoneName → ${notMaxed.size} not-maxed mobs: $notMaxed")
-                val maxedMobs = zoneMobs.map { it.displayName.replace(Regex("§[0-9a-fk-or]"), "").trim().lowercase() }.toSet() - notMaxed
-                if (maxedMobs.isNotEmpty()) FamilyAddons.LOGGER.info("BestiaryZoneHighlight: already maxed (skipped): $maxedMobs")
+                allZoneMobNames = fullSet
+                FamilyAddons.LOGGER.info("BestiaryZoneHighlight: $zoneName zone loaded — ${fullSet.size} mobs: $fullSet")
+
+                // Apply current MAX filter immediately using tablist
+                checkMaxFromTablist()
 
             } catch (e: Exception) {
                 FamilyAddons.LOGGER.warn("BestiaryZoneHighlight error: ${e.message}")
-            } finally {
-                fetching.set(false)
             }
         }
     }
 
-    private fun isMobMaxed(mob: MobEntry, killsObj: com.google.gson.JsonObject?): Boolean {
-        if (killsObj == null) return false
-        val total = mob.mobIds.sumOf { id -> killsObj.get(id)?.asLong ?: 0L }
-        return total >= mob.maxKills
+    // ── Called by BestiaryTracker every ~3s after its tablist poll ──────
+    // Filters allZoneMobNames by removing any that show MAX in the tablist.
+    fun checkMaxFromTablist() {
+        if (!FamilyConfigManager.config.bestiary.zoneHighlightEnabled) return
+        if (allZoneMobNames.isEmpty()) return
+
+        val maxed = readMaxedMobsFromTablist()
+        val filtered = allZoneMobNames.minus(maxed)
+        if (filtered != activeMobNames) {
+            activeMobNames = filtered
+            MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
+            FamilyAddons.LOGGER.info("BestiaryZoneHighlight: MAX check → ${filtered.size} active: $filtered")
+        }
+    }
+
+    // ── Read maxed mobs from tablist ──────────────────────────────────
+    // Parses the Bestiary section and collects any mob name whose value is "MAX"
+    private fun readMaxedMobsFromTablist(): Set<String> {
+        val tabList = MinecraftClient.getInstance().networkHandler?.playerList
+            ?: return emptySet()
+
+        val maxed = mutableSetOf<String>()
+        val sorted = tabList
+            .filter { it.displayName != null }
+            .sortedBy { it.profile.name ?: "" }
+
+        var inBestiary = false
+        for (entry in sorted) {
+            val raw      = entry.displayName!!.string
+            val stripped = raw.replace(COLOR_CODE_REGEX, "")
+            val clean    = stripped.trim()
+            val isIndented = stripped.startsWith(" ")
+
+            if (clean == "Bestiary:") { inBestiary = true; continue }
+            if (clean.isNotEmpty() && !isIndented && clean.endsWith(":")) {
+                if (inBestiary) inBestiary = false
+                continue
+            }
+            if (!inBestiary || !isIndented) continue
+
+            // Entry: " Sneaky Creeper 10: MAX" or " Lapis Zombie 5: 243/400"
+            val trimmed = stripped.trimStart()
+            val colonIdx = trimmed.lastIndexOf(':')
+            if (colonIdx < 0) continue
+            val value = trimmed.substring(colonIdx + 1).trim()
+
+            if (value.equals("MAX", ignoreCase = true)) {
+                // Extract mob name: strip trailing " N:" tier+colon
+                val mobName = trimmed.substring(0, colonIdx)
+                    .replace(Regex("\\s+\\d+$"), "")
+                    .trim()
+                    .lowercase()
+                maxed.add(mobName)
+            }
+        }
+        return maxed
     }
 
     private fun loadRepo() {
@@ -270,12 +289,6 @@ object BestiaryZoneHighlight {
             FamilyAddons.LOGGER.warn("BestiaryZoneHighlight: repo load failed: ${e.message}")
         }
     }
-
-    private fun get(url: String) = try {
-        val req = HttpRequest.newBuilder().uri(URI.create(url))
-            .header("User-Agent", "FamilyAddons/1.0").GET().build()
-        JsonParser.parseString(httpClient.send(req, HttpResponse.BodyHandlers.ofString()).body()).asJsonObject
-    } catch (e: Exception) { null }
 
     private fun getRaw(url: String) = try {
         val req = HttpRequest.newBuilder().uri(URI.create(url))

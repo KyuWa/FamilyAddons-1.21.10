@@ -70,6 +70,8 @@ object BestiaryTracker {
             if (!FamilyConfigManager.config.bestiary.enabled) return@register
             if (tickCounter++ % 60 != 0) return@register
             parseTablist(client)
+            // Also update zone highlight MAX check using fresh tablist data
+            BestiaryZoneHighlight.checkMaxFromTablist()
         }
 
         // Auto-grab mob name from tablist every 10s when enabled and text box is empty
