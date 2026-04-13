@@ -20,10 +20,24 @@ object EntityHighlight {
     val highlighted = mutableSetOf<Entity>()
     private var tick = 0
 
-    private fun getNames(): List<String> = FamilyConfigManager.config.highlight.mobNames
-        .split(",")
-        .map { it.trim().lowercase() }
-        .filter { it.isNotBlank() }
+    // ── Name list ─────────────────────────────────────────────────────
+    // Merges the Highlight config mob names WITH the Bestiary mob name.
+    // The two text boxes are completely independent — the bestiary name is
+    // appended at runtime only; it never modifies highlight.mobNames.
+    private fun getNames(): List<String> {
+        val names = FamilyConfigManager.config.highlight.mobNames
+            .split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toMutableList()
+
+        val bestiaryMob = FamilyConfigManager.config.bestiary.mobName.trim().lowercase()
+        if (bestiaryMob.isNotBlank() && bestiaryMob !in names) {
+            names.add(bestiaryMob)
+        }
+
+        return names
+    }
 
     private fun nameMatches(entity: Entity): Boolean {
         val names = getNames()
@@ -102,7 +116,7 @@ object EntityHighlight {
         val config = FamilyConfigManager.config.highlight
         if (!config.enabled) return
         if (highlighted.isEmpty()) return
-        if (config.drawingStyle == 1) return
+        if (config.drawingStyle == 1) return  // outline mode handled by EntityOutlineMixin
 
         val immediate = MinecraftClient.getInstance()
             .bufferBuilders?.entityVertexConsumers ?: return

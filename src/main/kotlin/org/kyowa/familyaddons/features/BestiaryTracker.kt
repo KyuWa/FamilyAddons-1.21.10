@@ -10,20 +10,29 @@ import org.kyowa.familyaddons.config.FamilyConfigManager
 object BestiaryTracker {
 
     // ── Displayed values ──────────────────────────────────────────────
-    var kills: Int = 0                  // total delta kills accumulated since tracking started
+    var kills: Int = 0                  // total delta kills for current mob (persisted across restarts)
     var bestiaryProgress: String = "?"  // full string e.g. "13,000/20,000" or "MAX"
 
     // ── Internal tracking ─────────────────────────────────────────────
-    private var lastRawProgress: Int = -1   // last numeric value read from tablist (-1 = not yet read)
+    private var lastRawProgress: Int = -1   // last numeric value read from tablist
     private var sessionKillDelta: Int = 0   // kills accumulated this session only
+    private var lastKnownMobName: String = ""  // detect mob name changes
 
     // ── Session ───────────────────────────────────────────────────────
     private var sessionStartMs: Long = 0L
     private var sessionActive: Boolean = false
 
+    // ── Fix 1: 30s idle pause ─────────────────────────────────────────
+    // Uptime only counts when kills are happening.
+    // If no kill in 30s, timer pauses; resumes on next kill.
+    private var lastKillTimeMs: Long = 0L        // time of last detected kill
+    private var pausedUptimeMs: Long = 0L        // accumulated uptime before current pause
+    private var timerRunning: Boolean = false     // whether the timer is currently ticking
+
     // ── Tick / mouse state ────────────────────────────────────────────
     private var tickCounter = 0
     private var mouseWasDown = false
+    private var resetMouseWasDown = false
 
     // ── HUD proxy to config ───────────────────────────────────────────
     var hudX: Int
@@ -39,7 +48,7 @@ object BestiaryTracker {
     fun save() = FamilyConfigManager.save()
 
     // ── HUD unscaled dimensions ───────────────────────────────────────
-    const val HUD_W = 170
+    const val HUD_W = 180
 
     fun hudH(): Int {
         val cfg = FamilyConfigManager.config.bestiary
@@ -58,7 +67,7 @@ object BestiaryTracker {
             parseTablist(client)
         }
 
-        // Mouse click — only fires when inventory open AND hovering the mode label
+        // Mouse click — mode switcher (inventory only, hover mode label)
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             if (!FamilyConfigManager.config.bestiary.enabled) return@register
             if (client.currentScreen !is InventoryScreen) { mouseWasDown = false; return@register }
@@ -81,6 +90,26 @@ object BestiaryTracker {
             mouseWasDown = mouseDown
         }
 
+        // Fix 2: Reset session button (inventory only, hover reset label)
+        ClientTickEvents.END_CLIENT_TICK.register { client ->
+            if (!FamilyConfigManager.config.bestiary.enabled) return@register
+            if (client.currentScreen !is InventoryScreen) { resetMouseWasDown = false; return@register }
+
+            val mouseDown = org.lwjgl.glfw.GLFW.glfwGetMouseButton(
+                client.window.handle,
+                org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
+            ) == org.lwjgl.glfw.GLFW.GLFW_PRESS
+
+            if (mouseDown && !resetMouseWasDown) {
+                val mx = client.mouse.x / client.window.scaleFactor
+                val my = client.mouse.y / client.window.scaleFactor
+                if (isHoveringResetLabel(mx, my)) {
+                    resetSession()
+                }
+            }
+            resetMouseWasDown = mouseDown
+        }
+
         // HUD render
         HudRenderCallback.EVENT.register { ctx, _ ->
             val cfg = FamilyConfigManager.config.bestiary
@@ -92,15 +121,10 @@ object BestiaryTracker {
             val mobName = cfg.mobName.ifBlank { "?" }
             val isInventoryOpen = client.currentScreen is InventoryScreen
 
-            val w = HUD_W
-            val h = hudH()
-
             val m = ctx.matrices
             m.pushMatrix()
             m.translate(cfg.hudX.toFloat(), cfg.hudY.toFloat())
             m.scale(cfg.hudScale, cfg.hudScale)
-
-            // Background
 
             var y = 3
 
@@ -108,12 +132,12 @@ object BestiaryTracker {
             ctx.drawText(tr, "§6§l$mobName Bestiary", 4, y, -1, true)
             y += 12
 
-            // Kills — session delta if session mode, total delta if total mode
+            // Kills
             val killsDisplay = if (isSession) sessionKillDelta else kills
             ctx.drawText(tr, "§eKills: §f${"%,d".format(killsDisplay)}", 4, y, -1, true)
             y += 10
 
-            // Bestiary Kills — append mode label when inventory open (hoverable)
+            // Bestiary Kills + mode tag (inventory only)
             if (isInventoryOpen) {
                 val modeStr = if (isSession) "§a[Session]" else "§a[Total]"
                 ctx.drawText(tr, "§eBestiary Kills: §f$bestiaryProgress  $modeStr", 4, y, -1, true)
@@ -122,49 +146,83 @@ object BestiaryTracker {
             }
             y += 10
 
-            // Uptime — only in session mode
+            // Fix 1: Uptime with idle-pause logic
             if (isSession) {
-                val elapsed = if (sessionActive) System.currentTimeMillis() - sessionStartMs else 0L
-                ctx.drawText(tr, "§eUptime: §f${formatTime(elapsed)}", 4, y, -1, true)
+                val elapsed = getActiveUptime()
+                // Tint grey if timer is paused (idle), white if running
+                val uptimeColor = if (timerRunning) "§f" else "§7"
+                ctx.drawText(tr, "§eUptime: $uptimeColor${formatTime(elapsed)}", 4, y, -1, true)
+                y += 10
+            }
+
+            // Fix 2: Reset session button (only when inventory open)
+            if (isInventoryOpen && isSession) {
+                ctx.drawText(tr, "§c[Reset Session]", 4, y, -1, true)
             }
 
             m.popMatrix()
 
-            // Tooltip — show when inventory open and hovering the mode label
+            // Tooltips when inventory open
             if (isInventoryOpen) {
                 val mx = client.mouse.x / client.window.scaleFactor
                 val my = client.mouse.y / client.window.scaleFactor
                 if (isHoveringModeLabel(mx, my)) {
                     renderModeTooltip(ctx, mx.toInt(), my.toInt(), isSession)
+                } else if (isSession && isHoveringResetLabel(mx, my)) {
+                    renderResetTooltip(ctx, mx.toInt(), my.toInt())
                 }
             }
         }
     }
 
-    // ── Check if mouse is over the mode label on the Bestiary Kills line ──
-    // That line is at y-offset: padding(3) + title(12) + kills(10) = 25 from HUD top
+    // ── Fix 1: Active uptime calculation ──────────────────────────────
+    // Timer only counts while kills are happening. Pauses after 30s idle.
+    private fun getActiveUptime(): Long {
+        if (!sessionActive) return 0L
+        val now = System.currentTimeMillis()
+
+        return if (timerRunning) {
+            // Check if 30s have elapsed since last kill
+            if (now - lastKillTimeMs > 30_000L) {
+                // Pause the timer
+                pausedUptimeMs += (lastKillTimeMs + 30_000L) - sessionStartMs - (if (pausedUptimeMs > 0) pausedUptimeMs else 0L)
+                // Simpler: just add to paused bucket the period that was active
+                timerRunning = false
+                pausedUptimeMs
+            } else {
+                pausedUptimeMs + (now - lastKillTimeMs.coerceAtLeast(sessionStartMs))
+            }
+        } else {
+            pausedUptimeMs
+        }
+    }
+
+    // ── Hover regions ─────────────────────────────────────────────────
+    // Mode label: "Bestiary Kills" line = y-offset 25 from HUD top
     private fun isHoveringModeLabel(mx: Double, my: Double): Boolean {
         val cfg = FamilyConfigManager.config.bestiary
         val sc = cfg.hudScale.toDouble()
         val sx = cfg.hudX.toDouble()
         val sy = cfg.hudY.toDouble()
-
-        // The [Total]/[Session] tag is at the end of the "Bestiary Kills" line
-        // We make the whole line clickable for simplicity
-        val lineTopY = sy + 25 * sc
+        val lineTopY    = sy + 25 * sc
         val lineBottomY = lineTopY + 10 * sc
-        val lineLeft = sx
-        val lineRight = sx + HUD_W * sc
-
-        return mx >= lineLeft && mx <= lineRight && my >= lineTopY && my <= lineBottomY
+        return mx >= sx && mx <= sx + HUD_W * sc && my >= lineTopY && my <= lineBottomY
     }
 
-    // ── Render the SkyHanni-style dropdown tooltip ────────────────────
-    private fun renderModeTooltip(
-        ctx: net.minecraft.client.gui.DrawContext,
-        mx: Int, my: Int,
-        isSession: Boolean
-    ) {
+    // Reset label: appears after uptime line = y-offset 35 (session mode only)
+    private fun isHoveringResetLabel(mx: Double, my: Double): Boolean {
+        val cfg = FamilyConfigManager.config.bestiary
+        val sc = cfg.hudScale.toDouble()
+        val sx = cfg.hudX.toDouble()
+        val sy = cfg.hudY.toDouble()
+        // title(12) + kills(10) + bestiaryKills(10) + uptime(10) + padding(3) = y=45
+        val lineTopY    = sy + 45 * sc
+        val lineBottomY = lineTopY + 10 * sc
+        return mx >= sx && mx <= sx + HUD_W * sc && my >= lineTopY && my <= lineBottomY
+    }
+
+    // ── Tooltips ──────────────────────────────────────────────────────
+    private fun renderModeTooltip(ctx: net.minecraft.client.gui.DrawContext, mx: Int, my: Int, isSession: Boolean) {
         val tr = MinecraftClient.getInstance().textRenderer
         val lines = listOf(
             "§eDisplay Mode",
@@ -174,20 +232,38 @@ object BestiaryTracker {
             "",
             "§bClick to switch Display Mode!"
         )
+        renderTooltip(ctx, tr, lines, mx, my)
+    }
 
+    private fun renderResetTooltip(ctx: net.minecraft.client.gui.DrawContext, mx: Int, my: Int) {
+        val tr = MinecraftClient.getInstance().textRenderer
+        val lines = listOf(
+            "§cReset Session",
+            "",
+            "§7Resets session kills and uptime.",
+            "§7Total kills are kept.",
+            "",
+            "§bClick to reset!"
+        )
+        renderTooltip(ctx, tr, lines, mx, my)
+    }
+
+    private fun renderTooltip(
+        ctx: net.minecraft.client.gui.DrawContext,
+        tr: net.minecraft.client.font.TextRenderer,
+        lines: List<String>,
+        mx: Int, my: Int
+    ) {
         val maxW = lines.maxOf { tr.getWidth(it.replace(COLOR_CODE_REGEX, "")) }
-        val ttW = maxW + 12
-        val ttH = lines.size * 10 + 6
+        val ttW  = maxW + 12
+        val ttH  = lines.size * 10 + 6
 
-        // Position tooltip above/right of cursor, clamp to screen
         var tx = mx + 10
         var ty = my - ttH - 4
         val sw = ctx.scaledWindowWidth
-        val sh = ctx.scaledWindowHeight
         if (tx + ttW > sw) tx = mx - ttW - 4
         if (ty < 0) ty = my + 14
 
-        // Border + background (dark purple like SkyHanni)
         ctx.fill(tx - 1, ty - 1, tx + ttW + 1, ty + ttH + 1, 0xFF1E0030.toInt())
         ctx.fill(tx,     ty,     tx + ttW,     ty + ttH,     0xF0100010.toInt())
 
@@ -198,25 +274,52 @@ object BestiaryTracker {
         }
     }
 
-    // ── Session ───────────────────────────────────────────────────────
+    // ── Session management ────────────────────────────────────────────
     private fun startSession() {
-        sessionStartMs = System.currentTimeMillis()
+        sessionStartMs  = System.currentTimeMillis()
         sessionKillDelta = 0
-        sessionActive = true
+        sessionActive   = true
+        timerRunning    = false
+        pausedUptimeMs  = 0L
+        lastKillTimeMs  = 0L
     }
 
-    // Tablist entries arrive unordered. Sort by profile name (!A-a, !B-c, !D-m...)
-    // so section headers appear before their entries.
-    // Format after sorting:
-    //   "Bestiary:"              ← no leading space
-    //   " Glacite Walker 10: 1,255/1,500"  ← leading space = entry
-    //   " Ghost 12: 13,000/20,000"
+    // Fix 2: Reset session only (keep total)
+    private fun resetSession() {
+        sessionKillDelta = 0
+        sessionStartMs   = System.currentTimeMillis()
+        timerRunning     = false
+        pausedUptimeMs   = 0L
+        lastKillTimeMs   = 0L
+        // sessionActive stays true if we're in session mode
+    }
+
+    // ── Tablist parser ────────────────────────────────────────────────
     private fun parseTablist(client: MinecraftClient) {
         val tabList = client.networkHandler?.playerList ?: return
-        val cfg = FamilyConfigManager.config.bestiary
-        val target = cfg.mobName.trim().lowercase()
+        val cfg     = FamilyConfigManager.config.bestiary
+        val target  = cfg.mobName.trim().lowercase()
 
-        // Sort by profile name so tab columns are in the right order
+        // Fix 3: Detect mob name change → reset total + session, load saved kills
+        if (target != lastKnownMobName) {
+            // Save current kills for old mob
+            if (lastKnownMobName.isNotEmpty()) {
+                cfg.savedKills[lastKnownMobName] = kills
+                FamilyConfigManager.save()
+            }
+            // Load saved kills for new mob
+            kills             = cfg.savedKills[target] ?: 0
+            lastKnownMobName  = target
+            lastRawProgress   = -1
+            bestiaryProgress  = "?"
+            // Reset session
+            sessionKillDelta  = 0
+            sessionActive     = false
+            timerRunning      = false
+            pausedUptimeMs    = 0L
+            lastKillTimeMs    = 0L
+        }
+
         val sorted = tabList
             .filter { it.displayName != null }
             .sortedBy { it.profile.name ?: "" }
@@ -224,18 +327,13 @@ object BestiaryTracker {
         var inBestiary = false
 
         for (entry in sorted) {
-            val raw = entry.displayName!!.string
-            val stripped = raw.replace(COLOR_CODE_REGEX, "")  // keep leading space intact
-            val clean = stripped.trim()
+            val raw       = entry.displayName!!.string
+            val stripped  = raw.replace(COLOR_CODE_REGEX, "")
+            val clean     = stripped.trim()
             val isIndented = stripped.startsWith(" ")
 
-            // Detect Bestiary section header
-            if (clean == "Bestiary:") {
-                inBestiary = true
-                continue
-            }
+            if (clean == "Bestiary:") { inBestiary = true; continue }
 
-            // Any non-indented "Xyz:" line ends the current section
             if (clean.isNotEmpty() && !isIndented && clean.endsWith(":")) {
                 if (inBestiary) inBestiary = false
                 continue
@@ -243,11 +341,9 @@ object BestiaryTracker {
 
             if (!inBestiary || !isIndented) continue
 
-            // Entry: " Glacite Walker 10: 1,255/1,500"
             val trimmed = stripped.trimStart()
             if (!trimmed.lowercase().startsWith(target)) continue
 
-            // Value is everything after the last ':'
             val colonIdx = trimmed.lastIndexOf(':')
             if (colonIdx < 0) continue
             val value = trimmed.substring(colonIdx + 1).trim()
@@ -262,26 +358,43 @@ object BestiaryTracker {
                     if (num != null) {
                         when {
                             lastRawProgress < 0 -> {
-                                // First read — set baseline, no kills counted yet
+                                // First read — baseline only
                                 lastRawProgress = num
                             }
                             num > lastRawProgress -> {
                                 val delta = num - lastRawProgress
                                 kills += delta
                                 if (sessionActive) sessionKillDelta += delta
+
+                                // Fix 1: Record kill time, start/resume timer
+                                val now = System.currentTimeMillis()
+                                if (!timerRunning) {
+                                    // Resume timer: shift sessionStartMs so pausedUptimeMs remains correct
+                                    if (sessionActive) {
+                                        // We were paused — bump sessionStartMs forward to account for idle gap
+                                        val idleGap = now - (lastKillTimeMs.takeIf { it > 0L } ?: now)
+                                        sessionStartMs += idleGap
+                                    }
+                                    timerRunning = true
+                                }
+                                lastKillTimeMs = now
+
+                                // Persist total kills for this mob
+                                cfg.savedKills[target] = kills
+                                FamilyConfigManager.save()
+
                                 lastRawProgress = num
+
+                                if (cfg.displayMode == 1 && !sessionActive) startSession()
                             }
                             num < lastRawProgress -> {
-                                // Mob changed or tracker reset — new baseline
                                 lastRawProgress = num
                             }
-                            // num == lastRawProgress: no change
                         }
-                        if (cfg.displayMode == 1 && !sessionActive) startSession()
                     }
                 }
             }
-            break // found our mob, stop
+            break
         }
     }
 

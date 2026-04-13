@@ -11,7 +11,7 @@ class BestiaryConfig {
     var enabled = true
 
     @Expose @JvmField
-    @ConfigOption(name = "Display Mode", desc = "Total: all-time kills. Session: kills + uptime this session.")
+    @ConfigOption(name = "Display Mode", desc = "Total: all-time kills for this mob. Session: kills + uptime this session.")
     @ConfigEditorDropdown(values = ["Total", "Session"])
     var displayMode = 0  // 0 = Total, 1 = Session
 
@@ -20,7 +20,12 @@ class BestiaryConfig {
     @ConfigEditorText
     var mobName = "Ghost"
 
-    // Saved by HUD editor — not shown as config options
+    // ── Persisted total kills per mob name ────────────────────────────
+    // Key = lowercased mob name, Value = accumulated total kills
+    @Expose @JvmField
+    var savedKills: MutableMap<String, Int> = mutableMapOf()
+
+    // ── HUD position/scale (saved by HUD editor) ──────────────────────
     @Expose var hudX: Int = 10
     @Expose var hudY: Int = 10
     @Expose var hudScale: Float = 1.0f
