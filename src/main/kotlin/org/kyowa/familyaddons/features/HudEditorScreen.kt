@@ -113,6 +113,30 @@ class HudEditorScreen : Screen(Text.literal("FA HUD Editor")) {
             }
         ))
 
+        // ── Bestiary Tracker ──────────────────────────────────────────────
+        elements.add(HudElement(
+            id = "bestiaryTracker", label = "Bestiary Tracker",
+            x = BestiaryTracker.hudX, y = BestiaryTracker.hudY,
+            w = BestiaryTracker.HUD_W, h = BestiaryTracker.hudH(),
+            scale = BestiaryTracker.hudScale,
+            canScale = true,
+            onSave = { elem ->
+                BestiaryTracker.hudX = elem.x
+                BestiaryTracker.hudY = elem.y
+                BestiaryTracker.hudScale = elem.scale
+                BestiaryTracker.save()
+            },
+            renderContent = { ctx, _ ->
+                val mobName = FamilyConfigManager.config.bestiary.mobName.ifBlank { "?" }
+                val isSession = FamilyConfigManager.config.bestiary.displayMode == 1
+                var ry = 3
+                ctx.drawText(tr, "§6§l$mobName Bestiary", 4, ry, -1, true); ry += 12
+                ctx.drawText(tr, "§eKills: §f${"%,d".format(BestiaryTracker.kills)}", 4, ry, -1, true); ry += 10
+                ctx.drawText(tr, "§eBestiary Kills: §f${BestiaryTracker.bestiaryProgress}", 4, ry, -1, true); ry += 10
+                if (isSession) ctx.drawText(tr, "§eUptime: §f0m 0s", 4, ry, -1, true)
+            }
+        ))
+
         // Pickobulus Timer
         val pbScale = PickaxeAbility.getScale()
         val pbPlain = PickaxeAbility.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")

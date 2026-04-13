@@ -42,8 +42,8 @@ object FamilyAddons : ClientModInitializer {
         SignMath.register()
         ItemPrices.register()
         GfsKeybinds.register()
-        PetValueCommand.register()
-        FarmCalcCommand.register()
+
+
 
         // Party
         PartyTracker.register()
@@ -70,6 +70,9 @@ object FamilyAddons : ClientModInitializer {
 
         // Mining
         PickaxeAbility.register()
+
+        // Bestiary
+        BestiaryTracker.register()
 
         // Discord
         DiscordListener.register()
@@ -100,22 +103,20 @@ object FamilyAddons : ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             val screen = client.currentScreen as? HudEditorScreen ?: run {
+                hudEditorMouseWasDown = false
                 return@register
             }
             val mouseDown = org.lwjgl.glfw.GLFW.glfwGetMouseButton(
                 client.window.handle,
                 org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
             ) == org.lwjgl.glfw.GLFW.GLFW_PRESS
-
             val mx = client.mouse.x / client.window.scaleFactor
             val my = client.mouse.y / client.window.scaleFactor
-
-            if (mouseDown && !hudEditorMouseWasDown) {
-                screen.onMousePress(mx, my)
-            } else if (!mouseDown && hudEditorMouseWasDown) {
-                screen.onMouseRelease()
-            }
+            if (mouseDown && !hudEditorMouseWasDown) screen.onMousePress(mx, my)
+            else if (!mouseDown && hudEditorMouseWasDown) screen.onMouseRelease()
             hudEditorMouseWasDown = mouseDown
         }
+
+        LOGGER.info("FamilyAddons $VERSION loaded!")
     }
 }

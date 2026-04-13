@@ -54,8 +54,8 @@ class FamilyConfig : Config() {
     var keybinds = KeybindsConfig()
 
     @Expose @JvmField
-    @Category(name = "Pet Calc", desc = "STOPPED WORKING ON THIS SHIT FUCK THIS! [maybe later i do it]")
-    var farmCalc = FarmCalcConfig()
+    @Category(name = "Bestiary", desc = "Bestiary kill tracker HUD")
+    var bestiary = BestiaryConfig()
 
     @Expose @JvmField
     @Category(name = "Player Disguise", desc = "Replace player renders with a mob model")
