@@ -73,6 +73,7 @@ object FamilyAddons : ClientModInitializer {
 
         // Bestiary
         BestiaryTracker.register()
+        BestiaryZoneHighlight.register()
 
         // Discord
         DiscordListener.register()
@@ -86,6 +87,7 @@ object FamilyAddons : ClientModInitializer {
         // One-off events
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             EntityHighlight.rescan()
+            BestiaryZoneHighlight.refresh()
         }
     }
 

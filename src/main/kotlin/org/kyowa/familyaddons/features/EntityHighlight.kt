@@ -20,20 +20,40 @@ object EntityHighlight {
     val highlighted = mutableSetOf<Entity>()
     private var tick = 0
 
-    // ── Name list ─────────────────────────────────────────────────────
-    // Merges the Highlight config mob names WITH the Bestiary mob name.
-    // The two text boxes are completely independent — the bestiary name is
-    // appended at runtime only; it never modifies highlight.mobNames.
-    private fun getNames(): List<String> {
-        val names = FamilyConfigManager.config.highlight.mobNames
-            .split(",")
-            .map { it.trim().lowercase() }
-            .filter { it.isNotBlank() }
-            .toMutableList()
+    // Returns true if ANY highlight source is active — used to decide whether to scan at all
+    private fun shouldScan(): Boolean {
+        if (FamilyConfigManager.config.highlight.enabled) return true
+        val bestiary = FamilyConfigManager.config.bestiary
+        if (bestiary.zoneHighlightEnabled && bestiary.bestiaryZone != 0) return true
+        if (bestiary.mobName.isNotBlank()) return true
+        return false
+    }
 
+    // Merges ALL highlight name sources:
+    //   1. highlight.mobNames      — manual Highlight config text box
+    //   2. bestiary.mobName        — HUD tracker mob (single name)
+    //   3. BestiaryZoneHighlight   — non-maxed zone mobs from API
+    private fun getNames(): List<String> {
+        val names = mutableListOf<String>()
+
+        // Source 1: manual highlight list (only when highlight feature is enabled)
+        if (FamilyConfigManager.config.highlight.enabled) {
+            FamilyConfigManager.config.highlight.mobNames
+                .split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotBlank() }
+                .forEach { if (it !in names) names.add(it) }
+        }
+
+        // Source 2: bestiary HUD mob name
         val bestiaryMob = FamilyConfigManager.config.bestiary.mobName.trim().lowercase()
-        if (bestiaryMob.isNotBlank() && bestiaryMob !in names) {
-            names.add(bestiaryMob)
+        if (bestiaryMob.isNotBlank() && bestiaryMob !in names) names.add(bestiaryMob)
+
+        // Source 3: zone highlight non-maxed mobs
+        if (FamilyConfigManager.config.bestiary.zoneHighlightEnabled) {
+            BestiaryZoneHighlight.activeMobNames.forEach { mob ->
+                if (mob.isNotBlank() && mob !in names) names.add(mob)
+            }
         }
 
         return names
@@ -85,7 +105,7 @@ object EntityHighlight {
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { _ ->
-            if (!FamilyConfigManager.config.highlight.enabled) {
+            if (!shouldScan()) {
                 if (highlighted.isNotEmpty()) highlighted.clear()
                 return@register
             }
@@ -153,5 +173,5 @@ object EntityHighlight {
         matrices.pop()
     }
 
-    fun hasHighlighted() = highlighted.isNotEmpty() && FamilyConfigManager.config.highlight.enabled
+    fun hasHighlighted() = highlighted.isNotEmpty() && shouldScan()
 }

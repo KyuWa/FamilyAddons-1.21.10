@@ -16,12 +16,22 @@ class BestiaryConfig {
     var displayMode = 0  // 0 = Total, 1 = Session
 
     @Expose @JvmField
-    @ConfigOption(name = "Mob Name", desc = "The mob you are tracking (e.g. 'Ghost'). HUD title will be '[Name] Bestiary'.")
+    @ConfigOption(name = "Mob Name", desc = "The mob you are tracking (e.g. 'Ghost'). HUD title will be '[Name] Bestiary'. Also highlights that mob via the ESP.")
     @ConfigEditorText
     var mobName = "Ghost"
 
+    // ── Zone-based ESP ────────────────────────────────────────────────
+    @Expose @JvmField
+    @ConfigOption(name = "Zone Highlight", desc = "Highlight all non-maxed bestiary mobs in the selected zone. Refreshes every 30 seconds.")
+    @ConfigEditorBoolean
+    var zoneHighlightEnabled = false
+
+    @Expose @JvmField
+    @ConfigOption(name = "Bestiary Zone", desc = "Select the zone to highlight non-maxed mobs for.")
+    @ConfigEditorDropdown(values = ["None", "Island", "Hub", "The Farming Lands", "The Garden", "Spider's Den", "The End", "Crimson Isle", "Deep Caverns", "Dwarven Mines", "Crystal Hollows", "The Park", "Galatea", "Spooky Festival", "The Catacombs", "Fishing", "Mythological Creatures", "Jerry", "Kuudra"])
+    var bestiaryZone = 0  // 0 = None
+
     // ── Persisted total kills per mob name ────────────────────────────
-    // Key = lowercased mob name, Value = accumulated total kills
     @Expose @JvmField
     var savedKills: MutableMap<String, Int> = mutableMapOf()
 
