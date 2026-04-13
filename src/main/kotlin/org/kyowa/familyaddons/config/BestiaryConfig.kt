@@ -16,9 +16,14 @@ class BestiaryConfig {
     var displayMode = 0  // 0 = Total, 1 = Session
 
     @Expose @JvmField
-    @ConfigOption(name = "Mob Name", desc = "The mob you are tracking (e.g. 'Ghost'). HUD title will be '[Name] Bestiary'. Also highlights that mob via the ESP.")
+    @ConfigOption(name = "Auto Detect Mob", desc = "Automatically use the first mob in the Bestiary tablist section as the tracked mob. Leave Mob Name blank to use this.")
+    @ConfigEditorBoolean
+    var autoMobName = true
+
+    @Expose @JvmField
+    @ConfigOption(name = "Mob Name", desc = "Manually set the mob to track (e.g. 'Ghost'). Leave blank to use Auto Detect. HUD title will be '[Name] Bestiary'.")
     @ConfigEditorText
-    var mobName = "Ghost"
+    var mobName = ""
 
     // ── Zone-based ESP ────────────────────────────────────────────────
     @Expose @JvmField

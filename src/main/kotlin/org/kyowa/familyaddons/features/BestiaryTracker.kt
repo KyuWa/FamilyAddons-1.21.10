@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.screen.ingame.InventoryScreen
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
+import org.kyowa.familyaddons.FamilyAddons
 import org.kyowa.familyaddons.config.FamilyConfigManager
 
 object BestiaryTracker {
@@ -17,6 +18,8 @@ object BestiaryTracker {
     private var lastRawProgress: Int = -1
     private var sessionKillDelta: Int = 0
     private var lastKnownMobName: String = ""
+    private var autoMobName: String = ""       // mob name grabbed from tablist when auto mode on
+    private var autoTickCounter = 0            // separate counter for 10s auto-grab poll
 
     // ── Session ───────────────────────────────────────────────────────
     // Timer starts on first kill. Pauses when tablist bestiary number hasn't
@@ -69,6 +72,15 @@ object BestiaryTracker {
             parseTablist(client)
         }
 
+        // Auto-grab mob name from tablist every 10s when enabled and text box is empty
+        ClientTickEvents.END_CLIENT_TICK.register { client ->
+            if (!FamilyConfigManager.config.bestiary.enabled) return@register
+            if (!FamilyConfigManager.config.bestiary.autoMobName) return@register
+            if (FamilyConfigManager.config.bestiary.mobName.isNotBlank()) return@register
+            if (autoTickCounter++ % 200 != 0) return@register
+            grabMobNameFromTablist(client)
+        }
+
         // Mode switcher click (inventory only)
         ClientTickEvents.END_CLIENT_TICK.register { client ->
             if (!FamilyConfigManager.config.bestiary.enabled) return@register
@@ -112,11 +124,18 @@ object BestiaryTracker {
         HudRenderCallback.EVENT.register { ctx, _ ->
             val cfg = FamilyConfigManager.config.bestiary
             if (!cfg.enabled) return@register
-            if (cfg.mobName.isBlank()) return@register
+            // Show HUD if manual name set OR auto-detect is on (may not have grabbed yet)
+            val hasTarget = cfg.mobName.isNotBlank() || (cfg.autoMobName && autoMobName.isNotBlank())
+            if (!hasTarget) return@register
             val client = MinecraftClient.getInstance()
             val tr = client.textRenderer
             val isSession = cfg.displayMode == 1
-            val mobName = cfg.mobName.ifBlank { "?" }
+            // Use manual text box if filled, else auto-grabbed name, else "?"
+            val mobName = when {
+                cfg.mobName.isNotBlank() -> cfg.mobName
+                cfg.autoMobName && autoMobName.isNotBlank() -> autoMobName
+                else -> "?"
+            }
             val isInventoryOpen = client.currentScreen is InventoryScreen
 
             val m = ctx.matrices
@@ -267,14 +286,19 @@ object BestiaryTracker {
         val cfg = FamilyConfigManager.config.bestiary
         val target = cfg.mobName.trim().lowercase()
 
+        // Resolve effective mob name: manual text box takes priority over auto-grabbed
+        val effectiveTarget = if (cfg.mobName.isNotBlank()) target
+        else if (cfg.autoMobName && autoMobName.isNotBlank()) autoMobName
+        else return  // nothing to track
+
         // Fix 3: detect mob name change → reset counts, load saved kills for new mob
-        if (target != lastKnownMobName) {
+        if (effectiveTarget != lastKnownMobName) {
             if (lastKnownMobName.isNotEmpty()) {
                 cfg.savedKills[lastKnownMobName] = kills
                 FamilyConfigManager.save()
             }
-            kills            = cfg.savedKills[target] ?: 0
-            lastKnownMobName = target
+            kills            = cfg.savedKills[effectiveTarget] ?: 0
+            lastKnownMobName = effectiveTarget
             lastRawProgress  = -1
             bestiaryProgress = "?"
             sessionKillDelta = 0
@@ -303,7 +327,7 @@ object BestiaryTracker {
             if (!inBestiary || !isIndented) continue
 
             val trimmed = stripped.trimStart()
-            if (!trimmed.lowercase().startsWith(target)) continue
+            if (!trimmed.lowercase().startsWith(effectiveTarget)) continue
 
             val colonIdx = trimmed.lastIndexOf(':')
             if (colonIdx < 0) continue
@@ -336,7 +360,7 @@ object BestiaryTracker {
                                     resumeTimer()
                                 }
 
-                                cfg.savedKills[target] = kills
+                                cfg.savedKills[effectiveTarget] = kills
                                 FamilyConfigManager.save()
                                 lastRawProgress = num
                             }
@@ -356,6 +380,40 @@ object BestiaryTracker {
                 }
             }
             break
+        }
+    }
+
+    // ── Auto-grab mob name from first bestiary entry in tablist ─────────
+    private fun grabMobNameFromTablist(client: MinecraftClient) {
+        val tabList = client.networkHandler?.playerList ?: return
+        val sorted = tabList
+            .filter { it.displayName != null }
+            .sortedBy { it.profile.name ?: "" }
+
+        var inBestiary = false
+        for (entry in sorted) {
+            val raw      = entry.displayName!!.string
+            val stripped = raw.replace(COLOR_CODE_REGEX, "")
+            val clean    = stripped.trim()
+            val isIndented = stripped.startsWith(" ")
+
+            if (clean == "Bestiary:") { inBestiary = true; continue }
+            if (clean.isNotEmpty() && !isIndented && clean.endsWith(":")) {
+                if (inBestiary) inBestiary = false
+                continue
+            }
+            if (!inBestiary || !isIndented) continue
+
+            // Entry: " Lapis Zombie 5: 243/400"
+            // Strip the tier number and value, keep just the mob name
+            val trimmed = stripped.trimStart()
+            // Remove trailing " N: xxx/yyy" or " N: MAX" — everything from last digit-colon onwards
+            val mobName = trimmed.replace(Regex("\\s+\\d+:\\s+.*$"), "").trim().lowercase()
+            if (mobName.isNotBlank() && mobName != autoMobName) {
+                autoMobName = mobName
+                FamilyAddons.LOGGER.info("BestiaryTracker: auto-grabbed mob name '$autoMobName' from tablist")
+            }
+            return  // only care about the first entry
         }
     }
 
