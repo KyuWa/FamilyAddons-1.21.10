@@ -1,15 +1,14 @@
 package org.kyowa.familyaddons.mixin;
 
 import net.minecraft.client.render.Camera;
-import net.minecraft.client.render.Frustum;
 import net.minecraft.client.render.WorldRenderer;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.client.util.ObjectAllocator;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
 import org.kyowa.familyaddons.features.CorpseESP;
-import org.kyowa.familyaddons.features.NpcLocations;
 import org.kyowa.familyaddons.features.EntityHighlight;
+import org.kyowa.familyaddons.features.NpcLocations;
 import org.kyowa.familyaddons.features.Parkour;
 import org.kyowa.familyaddons.features.Waypoints;
 import org.spongepowered.asm.mixin.Mixin;
@@ -45,6 +44,7 @@ public class WorldRendererMixin {
 
         fa_matrices.loadIdentity();
         fa_matrices.multiplyPositionMatrix(positionMatrix);
+
         Waypoints.INSTANCE.onWorldRender(fa_matrices, camera);
         CorpseESP.INSTANCE.onWorldRender(fa_matrices, camera);
         NpcLocations.INSTANCE.onWorldRender(fa_matrices, camera);

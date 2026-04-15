@@ -24,4 +24,10 @@ class UtilitiesConfig {
     @ConfigOption(name = "Lock Hotbar Scroll", desc = "Prevent hotbar scroll from wrapping around (slot 1 won't go to slot 9 and vice versa).")
     @ConfigEditorBoolean
     var lockHotbarScroll = true
+
+    @Expose @JvmField
+    @ConfigOption(name = "Arachne Timer", desc = "Show a countdown timer hologram when an Arachne Crystal is placed.")
+    @ConfigEditorBoolean
+    var arachneTimer = true
+
 }

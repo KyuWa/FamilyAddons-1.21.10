@@ -42,6 +42,7 @@ object FamilyAddons : ClientModInitializer {
         SignMath.register()
         ItemPrices.register()
         GfsKeybinds.register()
+        ArachneTimer.register()
 
 
 
