@@ -14,7 +14,7 @@ import java.util.concurrent.CompletableFuture
 
 object SharedDisguiseSync {
 
-    private const val WORKER_URL = "https://little-frog-551e.220395610.workers.dev"
+    private const val WORKER_URL = "https://disguise.kyowa.uk"
     private const val SECRET = "kyowa-fa-secret-2025"
 
     data class SyncedDisguise(val mobId: String, val baby: Boolean, val sheared: Boolean = false)

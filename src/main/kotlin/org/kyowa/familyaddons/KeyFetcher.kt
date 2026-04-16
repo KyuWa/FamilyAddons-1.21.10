@@ -8,7 +8,7 @@ import java.net.http.HttpResponse
 
 object KeyFetcher {
 
-    private const val WORKER_URL = "https://polished-morning-b6eb.220395610.workers.dev/"
+    private const val WORKER_URL = "https://key.kyowa.uk/"
     private const val SECRET_HEADER = "X-FA-Secret"
     private const val SECRET_TOKEN = "41d050ef-7801-47bd-880e-f0e052a3bbc3"
 
