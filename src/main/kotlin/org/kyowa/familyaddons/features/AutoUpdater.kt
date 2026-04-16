@@ -24,9 +24,8 @@ object AutoUpdater {
     else
         "KyuWa/FamilyAddons-1.21.10"
 
-    private val http = HttpClient.newHttpClient()
+    private val http = HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.ALWAYS).build()
 
-    // Set once on launch, never changes until restart
     @Volatile var latestVersion: String? = null
         private set
     @Volatile var downloadUrl: String? = null
@@ -39,24 +38,21 @@ object AutoUpdater {
         private set
     var downloaded = false
         private set
+    var skipped = false
+        private set
 
-    // Called once from FamilyAddons.onInitializeClient()
     fun register() {
         if (checked) return
         checked = true
         CompletableFuture.runAsync { checkForUpdate() }
 
-        // When title screen opens and update is available, inject the overlay screen
         ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
             if (screen !is TitleScreen) return@register
             if (!updateAvailable) return@register
-            if (downloaded) return@register  // already downloaded this session
-
-            // Replace title screen with our update prompt overlay
+            if (downloaded) return@register
+            if (AutoUpdater.skipped) return@register
             MinecraftClient.getInstance().execute {
-                MinecraftClient.getInstance().setScreen(
-                    UpdatePromptScreen(screen)
-                )
+                MinecraftClient.getInstance().setScreen(UpdatePromptScreen(screen))
             }
         }
     }
@@ -81,9 +77,10 @@ object AutoUpdater {
             updateAvailable = isNewer(tag, FamilyAddons.VERSION)
 
             if (updateAvailable) {
-                FamilyAddons.LOGGER.info("AutoUpdater: update available — $tag (current: ${FamilyAddons.VERSION})")
+                FamilyAddons.LOGGER.info("AutoUpdater: update available — $tag (you have ${FamilyAddons.VERSION})")
+                FamilyAddons.LOGGER.info("AutoUpdater: download URL — $downloadUrl")
             } else {
-                FamilyAddons.LOGGER.info("AutoUpdater: up to date (${FamilyAddons.VERSION})")
+                FamilyAddons.LOGGER.info("AutoUpdater: already up to date (${FamilyAddons.VERSION})")
             }
         } catch (e: Exception) {
             FamilyAddons.LOGGER.warn("AutoUpdater: check failed: ${e.message}")
@@ -94,37 +91,101 @@ object AutoUpdater {
         val url = downloadUrl ?: run { onDone(false); return }
         if (downloading) return
         downloading = true
+        FamilyAddons.LOGGER.info("AutoUpdater: starting download of version $latestVersion")
 
         CompletableFuture.runAsync {
             try {
-                val modsDir = File(MinecraftClient.getInstance().runDirectory, "mods")
+                val mc = MinecraftClient.getInstance()
+                val modsDir = File(mc.runDirectory, "mods")
+                val newName = "FamilyAddons-${latestVersion}.jar"
 
-                // Find and mark old jar for deletion
-                val oldJars = modsDir.listFiles()?.filter {
-                    it.name.startsWith("FamilyAddons") && it.name.endsWith(".jar")
-                } ?: emptyList()
+                // Download to a temp file first so we don't leave a broken jar if interrupted
+                val tempFile = File(modsDir, "$newName.tmp")
+                tempFile.delete() // clean up any previous failed attempt
 
-                // Download new jar
-                val newName = "FamilyAddons-${latestVersion}-${FamilyAddons.MC_VERSION}.jar"
                 val req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("User-Agent", "FamilyAddons/${FamilyAddons.VERSION}")
                     .GET().build()
                 val resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream())
-                val outFile = File(modsDir, newName)
-                FileOutputStream(outFile).use { out -> resp.body().use { it.copyTo(out) } }
+                FileOutputStream(tempFile).use { out -> resp.body().use { it.copyTo(out) } }
 
-                // Delete old jars now that new one is safely downloaded
-                oldJars.forEach { f ->
-                    if (f.absolutePath != outFile.absolutePath) {
-                        f.delete()
-                        FamilyAddons.LOGGER.info("AutoUpdater: removed old jar ${f.name}")
+                // Validate download — empty or tiny file means something went wrong
+                if (!tempFile.exists() || tempFile.length() < 10_000) {
+                    tempFile.delete()
+                    throw Exception("Downloaded file is invalid (size: ${tempFile.length()} bytes)")
+                }
+
+                // Rename temp → final name
+                val outFile = File(modsDir, newName)
+                outFile.delete() // remove any previous partial download
+                if (!tempFile.renameTo(outFile)) {
+                    // renameTo can fail across drives — fall back to copy+delete
+                    tempFile.copyTo(outFile, overwrite = true)
+                    tempFile.delete()
+                }
+                FamilyAddons.LOGGER.info("AutoUpdater: downloaded $newName (${outFile.length() / 1024}KB)")
+
+                // Find old jars to remove
+                val oldJars = modsDir.listFiles()?.filter {
+                    it.name.startsWith("FamilyAddons") &&
+                            it.name.endsWith(".jar") &&
+                            it.absolutePath != outFile.absolutePath
+                } ?: emptyList()
+
+                if (oldJars.isNotEmpty()) {
+                    // Write a self-deleting Python-style cleanup using pure Java ProcessBuilder
+                    // Same approach as SkyHanni: launch a separate JVM process to do deletions
+                    // after MC exits, using the same java binary that's running MC right now
+                    val isWindows = System.getProperty("os.name", "").startsWith("Windows")
+                    val javaBin = System.getProperty("java.home") +
+                            File.separator + "bin" + File.separator + "java" +
+                            if (isWindows) ".exe" else ""
+
+                    // Write a tiny inline Java source-less program as a jar isn't available,
+                    // so instead write a platform script that the separate process runs
+                    if (isWindows) {
+                        val scriptFile = File(modsDir, "fa_update_cleanup.bat")
+                        val sb = StringBuilder()
+                        sb.appendLine("@echo off")
+                        // Wait for MC process to release file handles
+                        sb.appendLine(":waitloop")
+                        for (f in oldJars) {
+                            sb.appendLine("2>nul (>>\"${f.absolutePath}\" echo off) && goto :deletenow")
+                        }
+                        sb.appendLine("timeout /t 1 /nobreak >nul")
+                        sb.appendLine("goto :waitloop")
+                        sb.appendLine(":deletenow")
+                        sb.appendLine("timeout /t 2 /nobreak >nul")
+                        for (f in oldJars) {
+                            sb.appendLine("del /f /q \"${f.absolutePath}\"")
+                            sb.appendLine("if exist \"${f.absolutePath}\" del /f /q \"${f.absolutePath}\"")
+                        }
+                        sb.appendLine("del /f /q \"%~f0\"")
+                        scriptFile.writeText(sb.toString())
+
+                        Runtime.getRuntime().addShutdownHook(Thread {
+                            try {
+                                ProcessBuilder("cmd.exe", "/c", "start", "/min", "\"FA Cleanup\"", "/wait", "cmd.exe", "/c", scriptFile.absolutePath)
+                                    .start()
+                                FamilyAddons.LOGGER.info("AutoUpdater: cleanup script launched for ${oldJars.size} old jar(s)")
+                            } catch (e: Exception) {
+                                FamilyAddons.LOGGER.warn("AutoUpdater: failed to launch cleanup: ${e.message}")
+                            }
+                        })
+                    } else {
+                        // Linux/Mac: no file locking, just delete directly
+                        oldJars.forEach { f ->
+                            if (f.delete()) FamilyAddons.LOGGER.info("AutoUpdater: deleted ${f.name}")
+                            else FamilyAddons.LOGGER.warn("AutoUpdater: could not delete ${f.name}")
+                        }
                     }
                 }
 
                 downloaded = true
-                FamilyAddons.LOGGER.info("AutoUpdater: downloaded $newName — restart to apply")
-                MinecraftClient.getInstance().execute { onDone(true) }
+                downloading = false
+                FamilyAddons.LOGGER.info("AutoUpdater: ready — restart Minecraft to apply update")
+                mc.execute { onDone(true) }
             } catch (e: Exception) {
                 FamilyAddons.LOGGER.warn("AutoUpdater: download failed: ${e.message}")
                 downloading = false
@@ -132,6 +193,8 @@ object AutoUpdater {
             }
         }
     }
+
+    fun skip() { skipped = true }
 
     private fun isNewer(candidate: String, current: String): Boolean {
         return try {
@@ -148,7 +211,6 @@ object AutoUpdater {
     }
 }
 
-// ── Update prompt overlay — shown on top of title screen ─────────────────
 class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("FamilyAddons Update")) {
 
     private var statusText: String? = null
@@ -157,33 +219,33 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
         val centerX = width / 2
         val boxY = height / 2 - 50
 
-        // Yes — download now
         addDrawableChild(
             ButtonWidget.builder(Text.literal("§aYes, update now")) {
+                if (AutoUpdater.downloading) return@builder
                 statusText = "§eDownloading..."
                 AutoUpdater.startDownload { success ->
-                    statusText = if (success)
-                        "§aDownloaded! Restart Minecraft to apply."
-                    else
-                        "§cDownload failed. Check logs."
+                    if (success) {
+                        MinecraftClient.getInstance().setScreen(parent)
+                    } else {
+                        statusText = "§cDownload failed — check logs. Click to retry."
+                    }
                 }
             }
-            .dimensions(centerX - 105, boxY + 70, 100, 20)
-            .build()
+                .dimensions(centerX - 105, boxY + 70, 100, 20)
+                .build()
         )
 
-        // No — go back to title screen
         addDrawableChild(
             ButtonWidget.builder(Text.literal("§cNo, skip")) {
+                AutoUpdater.skip()
                 MinecraftClient.getInstance().setScreen(parent)
             }
-            .dimensions(centerX + 5, boxY + 70, 100, 20)
-            .build()
+                .dimensions(centerX + 5, boxY + 70, 100, 20)
+                .build()
         )
     }
 
     override fun render(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
-        // Dim background
         context.fill(0, 0, width, height, 0xCC000000.toInt())
 
         val centerX = width / 2
@@ -192,31 +254,24 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
         val boxH = 110
         val boxX = centerX - boxW / 2
 
-        // Box background
         context.fill(boxX, boxY, boxX + boxW, boxY + boxH, 0xEE1A1A2E.toInt())
-        // Box border
-        context.fill(boxX,         boxY,         boxX + boxW, boxY + 1,     0xFF6C63FF.toInt())
-        context.fill(boxX,         boxY + boxH,  boxX + boxW, boxY + boxH + 1, 0xFF6C63FF.toInt())
-        context.fill(boxX,         boxY,         boxX + 1,    boxY + boxH,  0xFF6C63FF.toInt())
-        context.fill(boxX + boxW,  boxY,         boxX + boxW + 1, boxY + boxH, 0xFF6C63FF.toInt())
+        context.fill(boxX,        boxY,        boxX + boxW,     boxY + 1,        0xFF6C63FF.toInt())
+        context.fill(boxX,        boxY + boxH, boxX + boxW,     boxY + boxH + 1, 0xFF6C63FF.toInt())
+        context.fill(boxX,        boxY,        boxX + 1,        boxY + boxH,     0xFF6C63FF.toInt())
+        context.fill(boxX + boxW, boxY,        boxX + boxW + 1, boxY + boxH,     0xFF6C63FF.toInt())
 
         val tr = textRenderer
         val latest = AutoUpdater.latestVersion ?: "?"
-        val mcVer = FamilyAddons.MC_VERSION
 
-        // Title
         val title = "§e§lFamilyAddons Update Available"
-        context.drawText(tr, title, centerX - tr.getWidth(title.replace("§.", "")) / 2, boxY + 10, -1, true)
+        context.drawText(tr, title, centerX - tr.getWidth(title.replace(Regex("§."), "")) / 2, boxY + 10, -1, true)
 
-        // Version line
-        val versionLine = "§fVersion §b$latest §7(Minecraft $mcVer)"
+        val versionLine = "§fVersion §b$latest §7(MC ${FamilyAddons.MC_VERSION})"
         context.drawText(tr, versionLine, centerX - tr.getWidth(versionLine.replace(Regex("§."), "")) / 2, boxY + 28, -1, true)
 
-        // Question
         val question = "§7Would you like to update?"
         context.drawText(tr, question, centerX - tr.getWidth(question.replace(Regex("§."), "")) / 2, boxY + 44, -1, true)
 
-        // Status text (downloading / done / error)
         val status = statusText
         if (status != null) {
             context.drawText(tr, status, centerX - tr.getWidth(status.replace(Regex("§."), "")) / 2, boxY + boxH + 8, -1, true)
@@ -225,6 +280,5 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
         super.render(context, mouseX, mouseY, delta)
     }
 
-    // Prevent closing with Esc — force a choice
     override fun shouldCloseOnEsc() = false
 }

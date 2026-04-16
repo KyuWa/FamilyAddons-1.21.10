@@ -80,9 +80,6 @@ object FamilyAddons : ClientModInitializer {
         BestiaryTracker.register()
         BestiaryZoneHighlight.register()
 
-        // Discord
-        DiscordListener.register()
-
         // Player Disguise (config-driven, no register needed — mixin reads config directly)
         // PlayerDisguise is passive; mixins call PlayerDisguise.isEnabled() / getMobId() / includesSelf()
         SharedDisguiseSync.register()

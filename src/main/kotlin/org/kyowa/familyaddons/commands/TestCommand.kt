@@ -6,12 +6,9 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
 import net.minecraft.client.MinecraftClient
 import net.minecraft.text.Text
-import org.kyowa.familyaddons.features.HudEditorScreen
 import org.kyowa.familyaddons.features.InfernalKeyTracker
 import org.kyowa.familyaddons.features.PartyRepCheck
 import org.kyowa.familyaddons.features.Waypoints
-import org.kyowa.familyaddons.features.DiscordListener
-import org.kyowa.familyaddons.KeyFetcher
 import org.kyowa.familyaddons.party.PartyTracker
 
 object TestCommand {
@@ -163,15 +160,6 @@ object TestCommand {
                         })
             )
 
-            dispatcher.register(
-                literal("faclaim")
-                    .then(argument("channelId", StringArgumentType.word())
-                        .executes { ctx ->
-                            val channelId = StringArgumentType.getString(ctx, "channelId")
-                            DiscordListener.sendClaim(channelId)
-                            1
-                        })
-            )
         }
     }
 
