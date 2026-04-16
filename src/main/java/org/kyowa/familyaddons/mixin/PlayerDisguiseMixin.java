@@ -20,6 +20,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import org.kyowa.familyaddons.EntityRefAccessor;
 import org.kyowa.familyaddons.features.PlayerDisguise;
+import org.kyowa.familyaddons.features.SharedDisguiseSync;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -36,11 +37,12 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
     private static final Map<Class<?>, Method> createRenderStateCache = new HashMap<>();
 
-    private static LivingEntity cachedMob = null;
-    private static String cachedMobId = null;
-    private static Boolean cachedBaby = null;
-    private static LivingEntityRenderState cachedMobState = null;
-    private static Class<?> cachedRendererClass = null;
+    // Per-player cache keyed by username
+    private static final Map<String, LivingEntity> cachedMobs = new HashMap<>();
+    private static final Map<String, String> cachedMobIds = new HashMap<>();
+    private static final Map<String, Boolean> cachedBabies = new HashMap<>();
+    private static final Map<String, LivingEntityRenderState> cachedMobStates = new HashMap<>();
+    private static final Map<String, Class<?>> cachedRendererClasses = new HashMap<>();
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -48,41 +50,61 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             cancellable = true
     )
     private void onRender(S state, MatrixStack matrixStack, OrderedRenderCommandQueue queue, CameraRenderState cameraRenderState, CallbackInfo ci) {
-        if (!PlayerDisguise.INSTANCE.isEnabled()) return;
         if (!(state instanceof PlayerEntityRenderState playerState)) return;
 
         MinecraftClient client = MinecraftClient.getInstance();
         LivingEntity entity = ((EntityRefAccessor) state).familyaddons$getEntity();
         if (!(entity instanceof PlayerEntity player)) return;
 
-        int scope = PlayerDisguise.INSTANCE.getScope();
-        boolean isSelf = player == client.player;
-        if (scope == 0 && !isSelf) return;
-
         if (player.isInvisibleTo(client.player)) return;
 
-        String mobId = PlayerDisguise.INSTANCE.getMobId();
+        boolean isSelf = player == client.player;
+        String username = player.getName().getString();
+
+        String mobId = null;
+        boolean baby = false;
+
+        if (isSelf) {
+            // Self: use local PlayerDisguise config
+            if (!PlayerDisguise.INSTANCE.isEnabled()) return;
+            int scope = PlayerDisguise.INSTANCE.getScope();
+            if (scope == 0) return; // self-only scope shows in first-person handling only
+            mobId = PlayerDisguise.INSTANCE.getMobId();
+            baby = PlayerDisguise.INSTANCE.isBaby();
+        } else {
+            // Other players: check SharedDisguiseSync
+            SharedDisguiseSync.SyncedDisguise synced = SharedDisguiseSync.INSTANCE.getDisguise(username);
+            if (synced == null) return;
+            mobId = synced.getMobId();
+            baby = synced.getBaby();
+        }
+
+        if (mobId == null || mobId.isEmpty()) return;
+
         Identifier id = Identifier.tryParse(mobId);
         if (id == null) return;
 
         EntityType<?> type = Registries.ENTITY_TYPE.get(id);
         if (type == null || type == EntityType.PLAYER) return;
 
-        boolean baby = PlayerDisguise.INSTANCE.isBaby();
+        // Per-player cached mob
+        String cachedId = cachedMobIds.get(username);
+        Boolean cachedBaby = cachedBabies.get(username);
+        LivingEntity cachedMob = cachedMobs.get(username);
 
-        // Recreate mob if ID changed or baby toggle changed
-        if (cachedMob == null || !mobId.equals(cachedMobId) || baby != Boolean.TRUE.equals(cachedBaby)) {
+        if (cachedMob == null || !mobId.equals(cachedId) || baby != Boolean.TRUE.equals(cachedBaby)) {
             try {
                 cachedMob = (LivingEntity) type.create(player.getEntityWorld(), SpawnReason.COMMAND);
             } catch (Exception e) {
-                cachedMob = null;
+                cachedMobs.remove(username);
                 return;
             }
             if (cachedMob == null) return;
-            cachedMobId = mobId;
-            cachedBaby = baby;
-            cachedMobState = null;
-            cachedRendererClass = null;
+            cachedMobs.put(username, cachedMob);
+            cachedMobIds.put(username, mobId);
+            cachedBabies.put(username, baby);
+            cachedMobStates.remove(username);
+            cachedRendererClasses.remove(username);
 
             if (baby) {
                 if (cachedMob instanceof AnimalEntity animal) {
@@ -134,17 +156,18 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             createRenderStateCache.put(renderer.getClass(), createRenderState);
         }
 
-        // Recreate render state only if renderer class changed
-        if (cachedMobState == null || renderer.getClass() != cachedRendererClass) {
+        LivingEntityRenderState mobState = cachedMobStates.get(username);
+        Class<?> cachedRendererClass = cachedRendererClasses.get(username);
+
+        if (mobState == null || renderer.getClass() != cachedRendererClass) {
             try {
-                cachedMobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
-                cachedRendererClass = renderer.getClass();
+                mobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
+                cachedMobStates.put(username, mobState);
+                cachedRendererClasses.put(username, renderer.getClass());
             } catch (Exception e) {
                 return;
             }
         }
-
-        LivingEntityRenderState mobState = cachedMobState;
 
         try {
             renderer.updateRenderState(mob, mobState, partialTick);
