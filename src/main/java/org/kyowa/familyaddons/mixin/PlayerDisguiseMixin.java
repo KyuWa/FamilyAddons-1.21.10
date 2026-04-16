@@ -13,6 +13,9 @@ import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.passive.SheepEntity;
+import net.minecraft.entity.passive.SnowGolemEntity;
+import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.entity.mob.ZombieEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.client.model.Model;
@@ -36,13 +39,13 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         M extends Model<?>> {
 
     private static final Map<Class<?>, Method> createRenderStateCache = new HashMap<>();
-
-    // Per-player cache keyed by username
     private static final Map<String, LivingEntity> cachedMobs = new HashMap<>();
     private static final Map<String, String> cachedMobIds = new HashMap<>();
     private static final Map<String, Boolean> cachedBabies = new HashMap<>();
+    private static final Map<String, Boolean> cachedSheareds = new HashMap<>();
     private static final Map<String, LivingEntityRenderState> cachedMobStates = new HashMap<>();
     private static final Map<String, Class<?>> cachedRendererClasses = new HashMap<>();
+    private static final Map<String, Integer> mobAge = new HashMap<>();
 
     @Inject(
             method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/command/OrderedRenderCommandQueue;Lnet/minecraft/client/render/state/CameraRenderState;)V",
@@ -55,7 +58,6 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         MinecraftClient client = MinecraftClient.getInstance();
         LivingEntity entity = ((EntityRefAccessor) state).familyaddons$getEntity();
         if (!(entity instanceof PlayerEntity player)) return;
-
         if (player.isInvisibleTo(client.player)) return;
 
         boolean isSelf = player == client.player;
@@ -63,56 +65,72 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
         String mobId = null;
         boolean baby = false;
+        boolean sheared = false;
 
         if (isSelf) {
-            // Self: use local PlayerDisguise config
             if (!PlayerDisguise.INSTANCE.isEnabled()) return;
-            int scope = PlayerDisguise.INSTANCE.getScope();
-            if (scope == 0) return; // self-only scope shows in first-person handling only
             mobId = PlayerDisguise.INSTANCE.getMobId();
             baby = PlayerDisguise.INSTANCE.isBaby();
+            sheared = PlayerDisguise.INSTANCE.isSheared();
         } else {
-            // Other players: check SharedDisguiseSync
-            SharedDisguiseSync.SyncedDisguise synced = SharedDisguiseSync.INSTANCE.getDisguise(username);
-            if (synced == null) return;
-            mobId = synced.getMobId();
-            baby = synced.getBaby();
+            int scope = PlayerDisguise.INSTANCE.getScope();
+            if (PlayerDisguise.INSTANCE.isEnabled() && scope == 1) {
+                mobId = PlayerDisguise.INSTANCE.getMobId();
+                baby = PlayerDisguise.INSTANCE.isBaby();
+                sheared = PlayerDisguise.INSTANCE.isSheared();
+            } else {
+                SharedDisguiseSync.SyncedDisguise synced = SharedDisguiseSync.INSTANCE.getDisguise(username);
+                if (synced == null) return;
+                mobId = synced.getMobId();
+                baby = synced.getBaby();
+                sheared = synced.getSheared();
+            }
         }
 
         if (mobId == null || mobId.isEmpty()) return;
-
         Identifier id = Identifier.tryParse(mobId);
         if (id == null) return;
-
         EntityType<?> type = Registries.ENTITY_TYPE.get(id);
         if (type == null || type == EntityType.PLAYER) return;
 
-        // Per-player cached mob
         String cachedId = cachedMobIds.get(username);
-        Boolean cachedBaby = cachedBabies.get(username);
         LivingEntity cachedMob = cachedMobs.get(username);
+        boolean cachedBaby = Boolean.TRUE.equals(cachedBabies.get(username));
+        boolean cachedSheared = Boolean.TRUE.equals(cachedSheareds.get(username));
 
-        if (cachedMob == null || !mobId.equals(cachedId) || baby != Boolean.TRUE.equals(cachedBaby)) {
+        if (cachedMob == null || !mobId.equals(cachedId) || baby != cachedBaby || sheared != cachedSheared) {
             try {
                 cachedMob = (LivingEntity) type.create(player.getEntityWorld(), SpawnReason.COMMAND);
-            } catch (Exception e) {
-                cachedMobs.remove(username);
-                return;
-            }
+            } catch (Exception e) { cachedMobs.remove(username); return; }
             if (cachedMob == null) return;
-            cachedMobs.put(username, cachedMob);
-            cachedMobIds.put(username, mobId);
-            cachedBabies.put(username, baby);
-            cachedMobStates.remove(username);
-            cachedRendererClasses.remove(username);
 
+            // Baby: works for animals, zombies, AND villagers
             if (baby) {
-                if (cachedMob instanceof AnimalEntity animal) {
+                if (cachedMob instanceof VillagerEntity villager) {
+                    villager.setBreedingAge(-24000);
+                } else if (cachedMob instanceof AnimalEntity animal) {
                     animal.setBreedingAge(-24000);
                 } else if (cachedMob instanceof ZombieEntity zombie) {
                     zombie.setBaby(true);
                 }
             }
+
+            // Sheared: sheep removes wool, snow golem removes pumpkin
+            if (sheared) {
+                if (cachedMob instanceof SheepEntity sheep) {
+                    sheep.setSheared(true);
+                } else if (cachedMob instanceof SnowGolemEntity snowGolem) {
+                    snowGolem.setHasPumpkin(false);
+                }
+            }
+
+            cachedMobs.put(username, cachedMob);
+            cachedMobIds.put(username, mobId);
+            cachedBabies.put(username, baby);
+            cachedSheareds.put(username, sheared);
+            cachedMobStates.remove(username);
+            cachedRendererClasses.remove(username);
+            mobAge.remove(username);
         }
 
         LivingEntity mob = cachedMob;
@@ -158,22 +176,25 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
         LivingEntityRenderState mobState = cachedMobStates.get(username);
         Class<?> cachedRendererClass = cachedRendererClasses.get(username);
-
         if (mobState == null || renderer.getClass() != cachedRendererClass) {
             try {
                 mobState = (LivingEntityRenderState) createRenderState.invoke(renderer);
                 cachedMobStates.put(username, mobState);
                 cachedRendererClasses.put(username, renderer.getClass());
-            } catch (Exception e) {
-                return;
-            }
+            } catch (Exception e) { return; }
         }
 
+        // Tick the mob so flying/animated mobs have correct animation state
         try {
-            renderer.updateRenderState(mob, mobState, partialTick);
-        } catch (Exception e) {
-            return;
-        }
+            int age = mobAge.getOrDefault(username, 0) + 1;
+            mobAge.put(username, age);
+            mob.age = age;
+            // Give all mobs a small upward velocity — flying mobs need this for wing animations,
+            // grounded mobs ignore it since updateRenderState uses their actual movement data
+            mob.setVelocity(0.0, 0.1, 0.0);
+        } catch (Exception ignored) {}
+
+        try { renderer.updateRenderState(mob, mobState, partialTick); } catch (Exception e) { return; }
 
         mobState.bodyYaw = playerState.bodyYaw;
         mobState.relativeHeadYaw = playerState.relativeHeadYaw;
@@ -188,25 +209,12 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         mobState.y = playerState.y;
         mobState.z = playerState.z;
 
-        try {
-            renderer.render(mobState, matrixStack, queue, cameraRenderState);
-        } catch (Exception e) {
-            return;
-        }
+        try { renderer.render(mobState, matrixStack, queue, cameraRenderState); } catch (Exception e) { return; }
 
         if (playerState.displayName != null && playerState.nameLabelPos != null) {
-            queue.submitLabel(
-                    matrixStack,
-                    playerState.nameLabelPos,
-                    0,
-                    playerState.displayName,
-                    !playerState.sneaking,
-                    playerState.light,
-                    playerState.squaredDistanceToCamera,
-                    cameraRenderState
-            );
+            queue.submitLabel(matrixStack, playerState.nameLabelPos, 0, playerState.displayName,
+                    !playerState.sneaking, playerState.light, playerState.squaredDistanceToCamera, cameraRenderState);
         }
-
         ci.cancel();
     }
 }

@@ -81,6 +81,7 @@ object FamilyAddons : ClientModInitializer {
 
         // Player Disguise (config-driven, no register needed — mixin reads config directly)
         // PlayerDisguise is passive; mixins call PlayerDisguise.isEnabled() / getMobId() / includesSelf()
+        SharedDisguiseSync.register()
 
         // Dev
         DevTools.register()

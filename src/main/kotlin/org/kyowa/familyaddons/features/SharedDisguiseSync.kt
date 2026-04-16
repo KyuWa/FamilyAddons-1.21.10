@@ -20,7 +20,7 @@ object SharedDisguiseSync {
     // ── Replace with your FA_SECRET value set in the Worker env ──────
     private const val SECRET = "kyowa-fa-secret-2025"
 
-    data class SyncedDisguise(val mobId: String, val baby: Boolean)
+    data class SyncedDisguise(val mobId: String, val baby: Boolean, val sheared: Boolean = false)
 
     // username (lowercase) → disguise
     @Volatile
@@ -30,6 +30,12 @@ object SharedDisguiseSync {
     private val http = HttpClient.newHttpClient()
     private var tickCounter = 0
 
+    // Track last-pushed values to detect changes and push instantly
+    private var lastPushedEnabled: Boolean? = null
+    private var lastPushedMobId: String? = null
+    private var lastPushedBaby: Boolean? = null
+    private var lastPushedSheared: Boolean? = null
+
     // ── Push your own disguise to Cloudflare ─────────────────────────
     fun pushMyDisguise() {
         val cfg = FamilyConfigManager.config.playerDisguise
@@ -37,10 +43,13 @@ object SharedDisguiseSync {
             deleteMyDisguise()
             return
         }
-        val username = MinecraftClient.getInstance().session.username ?: return
+        val client = MinecraftClient.getInstance()
+        val username = client.player?.name?.string
+            ?: client.session?.username
+            ?: return
         CompletableFuture.runAsync {
             try {
-                val body = """{"username":"$username","mobId":"${cfg.mobId}","baby":${cfg.baby}}"""
+                val body = """{"username":"$username","mobId":"${cfg.mobId}","baby":${cfg.baby},"sheared":${cfg.sheared}}"""
                 val req = HttpRequest.newBuilder()
                     .uri(URI.create("$WORKER_URL/disguise"))
                     .header("Content-Type", "application/json")
@@ -57,7 +66,10 @@ object SharedDisguiseSync {
 
     // ── Remove your disguise from Cloudflare when disabled ───────────
     fun deleteMyDisguise() {
-        val username = MinecraftClient.getInstance().session.username ?: return
+        val client = MinecraftClient.getInstance()
+        val username = client.player?.name?.string
+            ?: client.session?.username
+            ?: return
         CompletableFuture.runAsync {
             try {
                 val body = """{"username":"$username"}"""
@@ -75,6 +87,9 @@ object SharedDisguiseSync {
     }
 
     // ── Fetch all disguises from Cloudflare ──────────────────────────
+    // Public so the config button can call it directly
+    fun fetchAllNow() { fetchAll() }
+
     private fun fetchAll() {
         CompletableFuture.runAsync {
             try {
@@ -89,7 +104,8 @@ object SharedDisguiseSync {
                     val obj = entry.asJsonObject
                     val mobId = obj.get("mobId")?.asString ?: continue
                     val baby = obj.get("baby")?.asBoolean ?: false
-                    result[name.lowercase()] = SyncedDisguise(mobId, baby)
+                    val sheared = obj.get("sheared")?.asBoolean ?: false
+                    result[name.lowercase()] = SyncedDisguise(mobId, baby, sheared)
                 }
                 remoteDisguises = result
                 FamilyAddons.LOGGER.info("SharedDisguiseSync: fetched ${result.size} disguises: ${result.keys}")
@@ -99,28 +115,53 @@ object SharedDisguiseSync {
         }
     }
 
-    // ── Register polling (every 30s) and join/leave hooks ────────────
+    // ── Register polling, realtime change detection, and join/leave hooks ──
     fun register() {
-        // Poll every 30 seconds
         ClientTickEvents.END_CLIENT_TICK.register { _ ->
-            if (tickCounter++ % 600 != 0) return@register
-            fetchAll()
+            val t = tickCounter++
+
+            // Check for disguise config changes every 20 ticks (~1s) and push instantly
+            if (t % 20 == 0) {
+                val cfg = FamilyConfigManager.config.playerDisguise
+                val changed = cfg.enabled != lastPushedEnabled ||
+                        cfg.mobId != lastPushedMobId ||
+                        cfg.baby != lastPushedBaby
+                if (changed) {
+                    lastPushedEnabled = cfg.enabled
+                    lastPushedMobId = cfg.mobId
+                    lastPushedBaby = cfg.baby
+                    lastPushedSheared = cfg.sheared
+                    if (cfg.enabled) pushMyDisguise() else deleteMyDisguise()
+                }
+            }
+
+            // Poll all disguises every 30s
+            if (t % 600 == 0) fetchAll()
         }
 
-        // Fetch immediately on world join, push your own disguise
+        // Fetch immediately on world join
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             fetchAll()
-            val cfg = FamilyConfigManager.config.playerDisguise
-            if (cfg.enabled) pushMyDisguise()
+            // Reset last-pushed so it re-pushes on join
+            lastPushedEnabled = null
+            lastPushedMobId = null
+            lastPushedBaby = null
+            lastPushedSheared = null
         }
 
         // Clean up on disconnect
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             remoteDisguises = emptyMap()
+            lastPushedEnabled = null
+            lastPushedMobId = null
+            lastPushedBaby = null
+            lastPushedSheared = null
         }
     }
 
     // ── Called by PlayerDisguiseMixin for non-self players ───────────
-    fun getDisguise(username: String): SyncedDisguise? =
-        remoteDisguises[username.lowercase()]
+    fun getDisguise(username: String): SyncedDisguise? {
+        if (!FamilyConfigManager.config.playerDisguise.showFriendsDisguises) return null
+        return remoteDisguises[username.lowercase()]
+    }
 }
