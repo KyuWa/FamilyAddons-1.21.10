@@ -87,7 +87,7 @@ object BestiaryZoneHighlight {
     @Volatile var allZoneMobNames: Set<String> = emptySet()
         private set
 
-    // Filtered list — allZoneMobNames minus any that show MAX in the tablist
+    // Filtered list — allZoneMobNames minus any that show MAX in the tablist or are persisted as maxed
     @Volatile var activeMobNames: Set<String> = emptySet()
         private set
 
@@ -144,8 +144,6 @@ object BestiaryZoneHighlight {
                     return@runAsync
                 }
 
-                // NAME_REMAPS is defined at object level — see below
-
                 // Build full zone mob name set (with name remaps applied)
                 val fullSet = mutableSetOf<String>()
                 for (mob in zoneMobs) {
@@ -157,7 +155,18 @@ object BestiaryZoneHighlight {
                 allZoneMobNames = fullSet
                 FamilyAddons.LOGGER.info("BestiaryZoneHighlight: $zoneName zone loaded — ${fullSet.size} mobs: $fullSet")
 
-                // Fast path: apply tablist MAX filter immediately
+                // Fast path: apply persisted maxed mobs immediately so we don't re-highlight on restart
+                val persistedMaxed = cfg.maxedMobs
+                if (persistedMaxed.isNotEmpty()) {
+                    val filtered = fullSet.minus(persistedMaxed)
+                    if (filtered != activeMobNames) {
+                        activeMobNames = filtered
+                        MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
+                        FamilyAddons.LOGGER.info("BestiaryZoneHighlight: persisted MAX applied — ${filtered.size} active")
+                    }
+                }
+
+                // Then also cross-check live tablist for any additional maxed mobs
                 checkMaxFromTablist()
 
                 // Thorough path: also cross-check against Hypixel API kill counts
@@ -187,8 +196,18 @@ object BestiaryZoneHighlight {
                                     FamilyAddons.LOGGER.info("BestiaryZoneHighlight: mob '$cleanName' ids=${mob.mobIds} total=$total max=${mob.maxKills}")
                                     if (total >= mob.maxKills) apiMaxed.add(mappedName)
                                 }
-                                // Merge API maxed with any tablist-detected maxed mobs
-                                val combined = allZoneMobNames.minus(apiMaxed)
+
+                                // Persist any newly API-discovered maxed mobs
+                                val newApiMaxed = apiMaxed - cfg.maxedMobs
+                                if (newApiMaxed.isNotEmpty()) {
+                                    cfg.maxedMobs.addAll(newApiMaxed)
+                                    FamilyConfigManager.save()
+                                    FamilyAddons.LOGGER.info("BestiaryZoneHighlight: persisted API maxed mobs: $newApiMaxed")
+                                }
+
+                                // Merge API maxed + persisted maxed mobs
+                                val allMaxed = apiMaxed + cfg.maxedMobs
+                                val combined = allZoneMobNames.minus(allMaxed)
                                 if (combined != activeMobNames) {
                                     activeMobNames = combined
                                     MinecraftClient.getInstance().execute { EntityHighlight.rescan() }
@@ -207,13 +226,26 @@ object BestiaryZoneHighlight {
     }
 
     // ── Called by BestiaryTracker every ~3s after its tablist poll ──────
-    // Filters allZoneMobNames by removing any that show MAX in the tablist.
+    // Filters allZoneMobNames by removing any that show MAX in the tablist,
+    // and persists newly discovered maxed mobs so they survive restarts.
     fun checkMaxFromTablist() {
         if (!FamilyConfigManager.config.bestiary.zoneHighlightEnabled) return
         if (allZoneMobNames.isEmpty()) return
 
+        val cfg = FamilyConfigManager.config.bestiary
         val maxed = readMaxedMobsFromTablist()
-        val filtered = allZoneMobNames.minus(maxed)
+
+        // Persist any newly discovered maxed mobs to config
+        val newMaxed = maxed - cfg.maxedMobs
+        if (newMaxed.isNotEmpty()) {
+            cfg.maxedMobs.addAll(newMaxed)
+            FamilyConfigManager.save()
+            FamilyAddons.LOGGER.info("BestiaryZoneHighlight: persisted new maxed mobs: $newMaxed")
+        }
+
+        // Include both live tablist maxed and persisted maxed when filtering
+        val allMaxed = maxed + cfg.maxedMobs
+        val filtered = allZoneMobNames.minus(allMaxed)
         if (filtered != activeMobNames) {
             activeMobNames = filtered
             MinecraftClient.getInstance().execute { EntityHighlight.rescan() }

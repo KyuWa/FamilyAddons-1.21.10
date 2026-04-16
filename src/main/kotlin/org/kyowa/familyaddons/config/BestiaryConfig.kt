@@ -40,6 +40,10 @@ class BestiaryConfig {
     @Expose @JvmField
     var savedKills: MutableMap<String, Int> = mutableMapOf()
 
+    // ── Persisted maxed mob names (zone highlight — survives restarts) ─
+    @Expose @JvmField
+    var maxedMobs: MutableSet<String> = mutableSetOf()
+
     // ── HUD position/scale (saved by HUD editor) ──────────────────────
     @Expose var hudX: Int = 10
     @Expose var hudY: Int = 10
