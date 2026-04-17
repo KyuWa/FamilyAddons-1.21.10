@@ -110,7 +110,8 @@ object EntityHighlight {
                 if (highlighted.isNotEmpty()) highlighted.clear()
                 return@register
             }
-            if (tick++ % 20 != 0) return@register
+            val interval = FamilyConfigManager.config.utilities.highlightRescanInterval.toInt().coerceIn(1, 20)
+            if (tick++ % interval != 0) return@register
             rescan()
         }
 

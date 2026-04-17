@@ -2,6 +2,7 @@ package org.kyowa.familyaddons.config
 
 import com.google.gson.annotations.Expose
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption
 
 class UtilitiesConfig {
@@ -30,4 +31,8 @@ class UtilitiesConfig {
     @ConfigEditorBoolean
     var arachneTimer = true
 
+    @Expose @JvmField
+    @ConfigOption(name = "Highlight Rescan Interval", desc = "How often (in ticks) to scan for mobs to highlight. Lower = faster detection, higher = better performance. Default 20 (1 second).")
+    @ConfigEditorSlider(minValue = 1f, maxValue = 20f, minStep = 1f)
+    var highlightRescanInterval = 20f
 }
