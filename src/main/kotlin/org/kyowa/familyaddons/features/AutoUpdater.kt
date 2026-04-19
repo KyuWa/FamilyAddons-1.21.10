@@ -32,6 +32,8 @@ object AutoUpdater {
         private set
     @Volatile var updateAvailable: Boolean = false
         private set
+    @Volatile var releaseNotes: List<String> = emptyList()
+        private set
 
     private var checked = false
     var downloading = false
@@ -74,6 +76,14 @@ object AutoUpdater {
 
             latestVersion = tag
             downloadUrl = asset.asJsonObject.get("browser_download_url")?.asString
+
+            // Parse release notes from the body field
+            val body = json.get("body")?.asString ?: ""
+            releaseNotes = body.lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .take(8) // cap at 8 lines so it fits the screen
+
             updateAvailable = isNewer(tag, FamilyAddons.VERSION)
 
             if (updateAvailable) {
@@ -99,9 +109,8 @@ object AutoUpdater {
                 val modsDir = File(mc.runDirectory, "mods")
                 val newName = "FamilyAddons-${latestVersion}.jar"
 
-                // Download to a temp file first so we don't leave a broken jar if interrupted
                 val tempFile = File(modsDir, "$newName.tmp")
-                tempFile.delete() // clean up any previous failed attempt
+                tempFile.delete()
 
                 val req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -110,23 +119,19 @@ object AutoUpdater {
                 val resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream())
                 FileOutputStream(tempFile).use { out -> resp.body().use { it.copyTo(out) } }
 
-                // Validate download — empty or tiny file means something went wrong
                 if (!tempFile.exists() || tempFile.length() < 10_000) {
                     tempFile.delete()
                     throw Exception("Downloaded file is invalid (size: ${tempFile.length()} bytes)")
                 }
 
-                // Rename temp → final name
                 val outFile = File(modsDir, newName)
-                outFile.delete() // remove any previous partial download
+                outFile.delete()
                 if (!tempFile.renameTo(outFile)) {
-                    // renameTo can fail across drives — fall back to copy+delete
                     tempFile.copyTo(outFile, overwrite = true)
                     tempFile.delete()
                 }
                 FamilyAddons.LOGGER.info("AutoUpdater: downloaded $newName (${outFile.length() / 1024}KB)")
 
-                // Find old jars to remove
                 val oldJars = modsDir.listFiles()?.filter {
                     it.name.startsWith("FamilyAddons") &&
                             it.name.endsWith(".jar") &&
@@ -134,21 +139,12 @@ object AutoUpdater {
                 } ?: emptyList()
 
                 if (oldJars.isNotEmpty()) {
-                    // Write a self-deleting Python-style cleanup using pure Java ProcessBuilder
-                    // Same approach as SkyHanni: launch a separate JVM process to do deletions
-                    // after MC exits, using the same java binary that's running MC right now
                     val isWindows = System.getProperty("os.name", "").startsWith("Windows")
-                    val javaBin = System.getProperty("java.home") +
-                            File.separator + "bin" + File.separator + "java" +
-                            if (isWindows) ".exe" else ""
 
-                    // Write a tiny inline Java source-less program as a jar isn't available,
-                    // so instead write a platform script that the separate process runs
                     if (isWindows) {
                         val scriptFile = File(modsDir, "fa_update_cleanup.bat")
                         val sb = StringBuilder()
                         sb.appendLine("@echo off")
-                        // Wait for MC process to release file handles
                         sb.appendLine(":waitloop")
                         for (f in oldJars) {
                             sb.appendLine("2>nul (>>\"${f.absolutePath}\" echo off) && goto :deletenow")
@@ -174,7 +170,6 @@ object AutoUpdater {
                             }
                         })
                     } else {
-                        // Linux/Mac: no file locking, just delete directly
                         oldJars.forEach { f ->
                             if (f.delete()) FamilyAddons.LOGGER.info("AutoUpdater: deleted ${f.name}")
                             else FamilyAddons.LOGGER.warn("AutoUpdater: could not delete ${f.name}")
@@ -217,7 +212,10 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
 
     override fun init() {
         val centerX = width / 2
-        val boxY = height / 2 - 50
+        val notes = AutoUpdater.releaseNotes
+        // box height grows with number of note lines: base 110 + 10 per line
+        val boxH = 110 + (notes.size * 10).coerceAtLeast(0)
+        val boxY = height / 2 - boxH / 2
 
         addDrawableChild(
             ButtonWidget.builder(Text.literal("§aYes, update now")) {
@@ -231,7 +229,7 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
                     }
                 }
             }
-                .dimensions(centerX - 105, boxY + 70, 100, 20)
+                .dimensions(centerX - 105, boxY + boxH - 30, 100, 20)
                 .build()
         )
 
@@ -240,7 +238,7 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
                 AutoUpdater.skip()
                 MinecraftClient.getInstance().setScreen(parent)
             }
-                .dimensions(centerX + 5, boxY + 70, 100, 20)
+                .dimensions(centerX + 5, boxY + boxH - 30, 100, 20)
                 .build()
         )
     }
@@ -249,11 +247,13 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
         context.fill(0, 0, width, height, 0xCC000000.toInt())
 
         val centerX = width / 2
-        val boxY = height / 2 - 50
-        val boxW = 280
-        val boxH = 110
+        val notes = AutoUpdater.releaseNotes
+        val boxW = 300
+        val boxH = 110 + (notes.size * 10).coerceAtLeast(0)
+        val boxY = height / 2 - boxH / 2
         val boxX = centerX - boxW / 2
 
+        // Background + border
         context.fill(boxX, boxY, boxX + boxW, boxY + boxH, 0xEE1A1A2E.toInt())
         context.fill(boxX,        boxY,        boxX + boxW,     boxY + 1,        0xFF6C63FF.toInt())
         context.fill(boxX,        boxY + boxH, boxX + boxW,     boxY + boxH + 1, 0xFF6C63FF.toInt())
@@ -263,18 +263,45 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
         val tr = textRenderer
         val latest = AutoUpdater.latestVersion ?: "?"
 
+        // Title
         val title = "§e§lFamilyAddons Update Available"
         context.drawText(tr, title, centerX - tr.getWidth(title.replace(Regex("§."), "")) / 2, boxY + 10, -1, true)
 
+        // Version line
         val versionLine = "§fVersion §b$latest §7(MC ${FamilyAddons.MC_VERSION})"
-        context.drawText(tr, versionLine, centerX - tr.getWidth(versionLine.replace(Regex("§."), "")) / 2, boxY + 28, -1, true)
+        context.drawText(tr, versionLine, centerX - tr.getWidth(versionLine.replace(Regex("§."), "")) / 2, boxY + 24, -1, true)
 
-        val question = "§7Would you like to update?"
-        context.drawText(tr, question, centerX - tr.getWidth(question.replace(Regex("§."), "")) / 2, boxY + 44, -1, true)
+        // Divider
+        context.fill(boxX + 10, boxY + 36, boxX + boxW - 10, boxY + 37, 0x886C63FF.toInt())
 
+        // Release notes
+        if (notes.isNotEmpty()) {
+            val notesLabel = "§7What's new:"
+            context.drawText(tr, notesLabel, boxX + 10, boxY + 42, -1, false)
+            notes.forEachIndexed { i, line ->
+                // Strip markdown bold (**text**) and format as plain
+                val clean = line.removePrefix("- ").removePrefix("* ")
+                    .replace("**", "")
+                val display = "§f- §7$clean"
+                // Truncate if too wide for box
+                val maxW = boxW - 20
+                val truncated = if (tr.getWidth(display.replace(Regex("§."), "")) > maxW) {
+                    var t = display
+                    while (tr.getWidth(t.replace(Regex("§."), "") + "...") > maxW && t.length > 4)
+                        t = t.dropLast(1)
+                    "$t..."
+                } else display
+                context.drawText(tr, truncated, boxX + 10, boxY + 54 + i * 10, -1, false)
+            }
+        } else {
+            val noNotes = "§7No release notes available."
+            context.drawText(tr, noNotes, centerX - tr.getWidth(noNotes.replace(Regex("§."), "")) / 2, boxY + 44, -1, false)
+        }
+
+        // Status text (downloading / error)
         val status = statusText
         if (status != null) {
-            context.drawText(tr, status, centerX - tr.getWidth(status.replace(Regex("§."), "")) / 2, boxY + boxH + 8, -1, true)
+            context.drawText(tr, status, centerX - tr.getWidth(status.replace(Regex("§."), "")) / 2, boxY + boxH + 6, -1, true)
         }
 
         super.render(context, mouseX, mouseY, delta)
