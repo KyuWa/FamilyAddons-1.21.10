@@ -37,9 +37,9 @@ class MiningConfig {
 
     @Expose @JvmField
     @ConfigAccordionId(id = 21)
-    @ConfigOption(name = "Pickobulus Timer", desc = "Show a countdown timer on screen when Pickobulus is used.")
+    @ConfigOption(name = "Pickobulus Timer", desc = "Show a countdown timer on screen when Pickobulus is used. [only works for me :)]")
     @ConfigEditorBoolean
-    var pickobulusTimer = true
+    var pickobulusTimer = false
 
     @Expose @JvmField var pickobulusHudX = -1
     @Expose @JvmField var pickobulusHudY = -1

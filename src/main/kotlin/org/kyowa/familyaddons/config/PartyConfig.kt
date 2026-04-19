@@ -7,7 +7,7 @@ class PartyConfig {
     @Expose @JvmField
     @ConfigOption(name = "Rep Check", desc = "Auto check Crimson Isle rep when someone joins party.")
     @ConfigEditorBoolean
-    var repCheckEnabled = true
+    var repCheckEnabled = false
 
     @Expose @JvmField
     @ConfigOption(name = "Party Calc", desc = "Enable calc/c command in party chat.")

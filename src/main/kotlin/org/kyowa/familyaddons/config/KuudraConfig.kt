@@ -7,37 +7,37 @@ class KuudraConfig {
     @Expose @JvmField
     @ConfigOption(name = "Auto Requeue", desc = "Auto requeue for Kuudra after each run.")
     @ConfigEditorBoolean
-    var autoRequeue = true
+    var autoRequeue = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Basic", desc = "Auto requeue for Basic tier")
     @ConfigEditorBoolean
-    var requeueBasic = true
+    var requeueBasic = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Hot", desc = "Auto requeue for Hot tier")
     @ConfigEditorBoolean
-    var requeueHot = true
+    var requeueHot = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Burning", desc = "Auto requeue for Burning tier")
     @ConfigEditorBoolean
-    var requeueBurning = true
+    var requeueBurning = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Fiery", desc = "Auto requeue for Fiery tier")
     @ConfigEditorBoolean
-    var requeueFiery = true
+    var requeueFiery = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Infernal", desc = "Auto requeue for Infernal tier")
     @ConfigEditorBoolean
-    var requeueInfernal = true
+    var requeueInfernal = false
 
     @Expose @JvmField
     @ConfigOption(name = "Check Party Size", desc = "Cancel requeue if party has fewer than 4 players.")
     @ConfigEditorBoolean
-    var checkPartySize = true
+    var checkPartySize = false
 
     // DT Title accordion
     @Expose @JvmField
@@ -63,7 +63,7 @@ class KuudraConfig {
     @ConfigAccordionId(id = 2)
     @ConfigOption(name = "Enable Key Tracker", desc = "Show key material counts in Mage/Barbarian shop.")
     @ConfigEditorBoolean
-    var keyTracker = true
+    var keyTracker = false
 
     @Expose @JvmField
     @ConfigOption(name = "Requeue Delay", desc = "Seconds to wait before requeuing after Kuudra ends.")

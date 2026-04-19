@@ -42,6 +42,10 @@ class FamilyConfig : Config() {
     var waypoints = WaypointsConfig()
 
     @Expose @JvmField
+    @Category(name = "World Scanner", desc = "Crystal Hollows structure scanner")
+    var worldScanner = WorldScannerConfig()
+
+    @Expose @JvmField
     @Category(name = "Parkour", desc = "Parkour system settings")
     var parkour = ParkourConfig()
 

@@ -9,7 +9,7 @@ class ChatFiltersConfig {
     @Expose @JvmField
     @ConfigOption(name = "Enable Chat Filters", desc = "Hide chat messages containing filtered phrases.")
     @ConfigEditorBoolean
-    var enabled = true
+    var enabled = false
 
     @Expose @JvmField
     @ConfigOption(name = "Filtered Phrases", desc = "Comma-separated list of phrases to hide from chat.")

@@ -12,7 +12,7 @@ class ParkourConfig {
     @Expose @JvmField
     @ConfigOption(name = "Enable Parkour", desc = "Enable the parkour system.")
     @ConfigEditorBoolean
-    var enabled = true
+    var enabled = false
 
     @Expose @JvmField
     @ConfigOption(name = "Active Parkour", desc = "Name of the parkour to start when you press the keybind.")

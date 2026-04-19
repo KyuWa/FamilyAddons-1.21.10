@@ -8,7 +8,7 @@ class BestiaryConfig {
     @Expose @JvmField
     @ConfigOption(name = "Enable HUD", desc = "Show the Bestiary tracker HUD on screen.")
     @ConfigEditorBoolean
-    var enabled = true
+    var enabled = false
 
     @Expose @JvmField
     @ConfigOption(name = "Display Mode", desc = "Total: all-time kills for this mob. Session: kills + uptime this session.")
@@ -18,7 +18,7 @@ class BestiaryConfig {
     @Expose @JvmField
     @ConfigOption(name = "Auto Detect Mob", desc = "Automatically use the first mob in the Bestiary tablist section as the tracked mob. Leave Mob Name blank to use this.")
     @ConfigEditorBoolean
-    var autoMobName = true
+    var autoMobName = false
 
     @Expose @JvmField
     @ConfigOption(name = "Mob Name", desc = "Manually set the mob to track (e.g. 'Ghost'). Leave blank to use Auto Detect. HUD title will be '[Name] Bestiary'.")

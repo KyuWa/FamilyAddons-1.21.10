@@ -6,7 +6,9 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.render.Camera
+import net.minecraft.client.render.LightmapTextureManager
 import net.minecraft.client.render.RenderLayer
+import net.minecraft.client.render.VertexConsumerProvider
 import net.minecraft.client.render.VertexRendering
 import net.minecraft.client.util.math.MatrixStack
 import net.minecraft.entity.decoration.ArmorStandEntity
@@ -14,6 +16,7 @@ import net.minecraft.entity.EquipmentSlot
 import net.minecraft.util.math.Box
 import org.kyowa.familyaddons.config.FamilyConfigManager
 import org.lwjgl.opengl.GL11
+import kotlin.math.sqrt
 
 object CorpseESP {
 
@@ -143,9 +146,7 @@ object CorpseESP {
             true
         }
 
-        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            cachedCorpses.clear()
-        }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> cachedCorpses.clear() }
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             cachedCorpses.clear()
             lastArea = null
@@ -165,6 +166,7 @@ object CorpseESP {
         matrices.push()
         matrices.translate(-cam.x, -cam.y, -cam.z)
 
+        // Pass 1: with depth
         val immediate = client.bufferBuilders?.entityVertexConsumers ?: run { matrices.pop(); return }
         for (c in visible) {
             val box = Box(c.x - 0.5, c.y, c.z - 0.5, c.x + 0.5, c.y + 2.0, c.z + 0.5)
@@ -172,45 +174,55 @@ object CorpseESP {
         }
         immediate.draw(RenderLayer.getLines())
 
+        // Pass 2: through walls, full alpha
         GL11.glDisable(GL11.GL_DEPTH_TEST)
         val immediate2 = client.bufferBuilders?.entityVertexConsumers ?: run { GL11.glEnable(GL11.GL_DEPTH_TEST); matrices.pop(); return }
         for (c in visible) {
             val box = Box(c.x - 0.5, c.y, c.z - 0.5, c.x + 0.5, c.y + 2.0, c.z + 0.5)
-            VertexRendering.drawBox(matrices.peek(), immediate2.getBuffer(RenderLayer.getLines()), box, c.r, c.g, c.b, 0.3f)
+            VertexRendering.drawBox(matrices.peek(), immediate2.getBuffer(RenderLayer.getLines()), box, c.r, c.g, c.b, 1.0f)
         }
         immediate2.draw(RenderLayer.getLines())
         GL11.glEnable(GL11.GL_DEPTH_TEST)
 
         matrices.pop()
 
-        val immediate3 = client.bufferBuilders?.entityVertexConsumers ?: return
+        // Labels
+        val labelBuffer = client.bufferBuilders?.entityVertexConsumers ?: return
         for (c in visible) {
-            val dx = c.x - cam.x; val dy = c.y - cam.y; val dz = c.z - cam.z
-            val dist = Math.sqrt(dx * dx + dy * dy + dz * dz).toInt()
-            renderLabel(matrices, camera, immediate3, c.x, c.y + 2.2, c.z, "§f${c.label} §7(${dist}m)", c.r, c.g, c.b)
+            val dx = c.x - cam.x; val dy = c.y + 2.2 - cam.y; val dz = c.z - cam.z
+            val dist = sqrt(dx * dx + dy * dy + dz * dz)
+            val distInt = dist.toInt()
+            renderLabel(matrices, labelBuffer, cam.x, cam.y, cam.z,
+                c.x, c.y + 2.2, c.z, "§f${c.label} §7(${distInt}m)", dist)
         }
+        labelBuffer.draw()
     }
 
     private fun renderLabel(
-        matrices: MatrixStack, camera: Camera,
-        consumers: net.minecraft.client.render.VertexConsumerProvider,
-        x: Double, y: Double, z: Double, text: String,
-        r: Float, g: Float, b: Float
+        matrices: MatrixStack,
+        consumers: VertexConsumerProvider,
+        camX: Double, camY: Double, camZ: Double,
+        x: Double, y: Double, z: Double,
+        text: String,
+        dist: Double
     ) {
         val client = MinecraftClient.getInstance()
-        val cam = camera.pos
-        matrices.push()
-        matrices.translate(x - cam.x, y - cam.y, z - cam.z)
-        matrices.multiply(camera.rotation)
-        val scale = 0.025f
-        matrices.scale(-scale, -scale, scale)
         val tr = client.textRenderer
+
+        // Scale grows with distance but capped: min=1.0, max=5.0
+        val scale = (dist / 10.0).coerceIn(1.0, 5.0).toFloat() * 0.025f
+
+        matrices.push()
+        matrices.translate(x - camX, y - camY, z - camZ)
+        matrices.multiply(client.gameRenderer.camera.rotation)
+        matrices.scale(scale, -scale, scale)
+
         val w = tr.getWidth(text.replace(COLOR_CODE_REGEX, ""))
         tr.draw(
-            text, -w / 2f, 0f, -1, false,
+            text, -w / 2f, 0f, -1, true,
             matrices.peek().positionMatrix, consumers,
             net.minecraft.client.font.TextRenderer.TextLayerType.SEE_THROUGH,
-            0, 0xF000F0
+            0, LightmapTextureManager.MAX_LIGHT_COORDINATE
         )
         matrices.pop()
     }
