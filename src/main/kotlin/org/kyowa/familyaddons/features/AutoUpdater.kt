@@ -9,6 +9,7 @@ import net.minecraft.client.gui.screen.TitleScreen
 import net.minecraft.client.gui.widget.ButtonWidget
 import net.minecraft.text.Text
 import org.kyowa.familyaddons.FamilyAddons
+import org.kyowa.familyaddons.config.FamilyConfigManager
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
@@ -46,10 +47,19 @@ object AutoUpdater {
     fun register() {
         if (checked) return
         checked = true
+
+        // Respect the toggle — if disabled at startup, don't check or register the prompt listener.
+        if (!FamilyConfigManager.config.general.autoUpdaterEnabled) {
+            FamilyAddons.LOGGER.info("AutoUpdater: disabled in config, skipping check")
+            return
+        }
+
         CompletableFuture.runAsync { checkForUpdate() }
 
         ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
             if (screen !is TitleScreen) return@register
+            // Re-check the toggle at prompt time so users can toggle at runtime
+            if (!FamilyConfigManager.config.general.autoUpdaterEnabled) return@register
             if (!updateAvailable) return@register
             if (downloaded) return@register
             if (AutoUpdater.skipped) return@register

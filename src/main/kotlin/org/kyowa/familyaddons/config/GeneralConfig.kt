@@ -1,6 +1,7 @@
 package org.kyowa.familyaddons.config
 
 import com.google.gson.annotations.Expose
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorButton
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorText
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption
@@ -27,4 +28,9 @@ class GeneralConfig {
     var getApiKey: Runnable = Runnable {
         Desktop.getDesktop().browse(URI("https://developer.hypixel.net/dashboard"))
     }
+
+    @Expose @JvmField
+    @ConfigOption(name = "Auto Updater", desc = "Check for updates on launch and prompt to download them. Disable to skip update checks entirely.")
+    @ConfigEditorBoolean
+    var autoUpdaterEnabled = true
 }
