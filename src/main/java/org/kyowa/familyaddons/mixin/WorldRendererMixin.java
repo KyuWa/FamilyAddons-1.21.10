@@ -1,6 +1,5 @@
 package org.kyowa.familyaddons.mixin;
 
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.WorldRenderer;
 import net.minecraft.client.util.math.MatrixStack;
@@ -12,7 +11,6 @@ import org.kyowa.familyaddons.features.EntityHighlight;
 import org.kyowa.familyaddons.features.NpcLocations;
 import org.kyowa.familyaddons.features.Parkour;
 import org.kyowa.familyaddons.features.Waypoints;
-import org.kyowa.familyaddons.features.WorldScanner;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Coerce;
@@ -42,8 +40,7 @@ public class WorldRendererMixin {
                 !CorpseESP.INSTANCE.hasCachedCorpses() &&
                 !NpcLocations.INSTANCE.hasActiveWaypoints() &&
                 !Parkour.INSTANCE.hasRings() &&
-                !EntityHighlight.INSTANCE.hasHighlighted() &&
-                !WorldScanner.INSTANCE.hasWaypoints()) return;
+                !EntityHighlight.INSTANCE.hasHighlighted()) return;
 
         fa_matrices.loadIdentity();
         fa_matrices.multiplyPositionMatrix(positionMatrix);
@@ -53,6 +50,5 @@ public class WorldRendererMixin {
         NpcLocations.INSTANCE.onWorldRender(fa_matrices, camera);
         Parkour.INSTANCE.onWorldRender(fa_matrices, camera);
         EntityHighlight.INSTANCE.onWorldRender(fa_matrices, camera);
-        WorldScanner.INSTANCE.onWorldRender(fa_matrices, camera);
     }
 }

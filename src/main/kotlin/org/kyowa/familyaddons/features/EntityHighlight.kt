@@ -20,7 +20,6 @@ object EntityHighlight {
     val highlighted = mutableSetOf<Entity>()
     private var tick = 0
 
-    // Returns true if ANY highlight source is active — used to decide whether to scan at all
     private fun shouldScan(): Boolean {
         if (FamilyConfigManager.config.highlight.enabled) return true
         val bestiary = FamilyConfigManager.config.bestiary
@@ -29,14 +28,8 @@ object EntityHighlight {
         return false
     }
 
-    // Merges ALL highlight name sources:
-    //   1. highlight.mobNames      — manual Highlight config text box
-    //   2. bestiary.mobName        — HUD tracker mob (single name)
-    //   3. BestiaryZoneHighlight   — non-maxed zone mobs from API
     private fun getNames(): List<String> {
         val names = mutableListOf<String>()
-
-        // Source 1: manual highlight list (only when highlight feature is enabled)
         if (FamilyConfigManager.config.highlight.enabled) {
             FamilyConfigManager.config.highlight.mobNames
                 .split(",")
@@ -44,19 +37,14 @@ object EntityHighlight {
                 .filter { it.isNotBlank() }
                 .forEach { if (it !in names) names.add(it) }
         }
-
-        // Source 2: bestiary HUD mob name
         val bestiaryMob = FamilyConfigManager.config.bestiary.mobName.trim().lowercase()
         if (bestiaryMob.isNotBlank() && bestiaryMob !in names) names.add(bestiaryMob)
-
-        // Source 3: zone highlight non-maxed mobs (lowercase for entity name matching)
         if (FamilyConfigManager.config.bestiary.zoneHighlightEnabled) {
             BestiaryZoneHighlight.activeMobNames.forEach { mob ->
                 val lower = mob.lowercase()
                 if (lower.isNotBlank() && lower !in names) names.add(lower)
             }
         }
-
         return names
     }
 
@@ -72,20 +60,12 @@ object EntityHighlight {
         if (entity is ArmorStandEntity && entity.isInvisible) {
             val world = MinecraftClient.getInstance().world ?: return null
             val player = MinecraftClient.getInstance().player
-
             val byId = world.getEntityById(entity.id - 1)
-            if (byId != null && byId !is ArmorStandEntity && byId != player && byId.isAlive) {
-                return byId
-            }
-
+            if (byId != null && byId !is ArmorStandEntity && byId != player && byId.isAlive) return byId
             val candidates = world.getEntitiesByClass(
-                LivingEntity::class.java,
-                entity.boundingBox.expand(0.5, 1.5, 0.5)
+                LivingEntity::class.java, entity.boundingBox.expand(0.5, 1.5, 0.5)
             ) { it !is ArmorStandEntity && it != player && it.isAlive }
-            return candidates.minByOrNull {
-                val dx = it.x - entity.x; val dz = it.z - entity.z
-                dx * dx + dz * dz
-            }
+            return candidates.minByOrNull { val dx = it.x - entity.x; val dz = it.z - entity.z; dx*dx + dz*dz }
         }
         return entity
     }
@@ -97,9 +77,7 @@ object EntityHighlight {
         if (entity !in highlighted) return 0
         return try {
             val parts = config.color.split(":")
-            val r = parts[2].toInt()
-            val g = parts[3].toInt()
-            val b = parts[4].toInt()
+            val r = parts[2].toInt(); val g = parts[3].toInt(); val b = parts[4].toInt()
             (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         } catch (e: Exception) { 0xFFFF0000.toInt() }
     }
@@ -114,10 +92,7 @@ object EntityHighlight {
             if (tick++ % interval != 0) return@register
             rescan()
         }
-
-        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            highlighted.clear()
-        }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> highlighted.clear() }
     }
 
     fun rescan() {
@@ -138,7 +113,6 @@ object EntityHighlight {
         val config = FamilyConfigManager.config.highlight
         if (!config.enabled) return
         if (highlighted.isEmpty()) return
-        if (config.drawingStyle == 1) return  // outline mode handled by EntityOutlineMixin
 
         val immediate = MinecraftClient.getInstance()
             .bufferBuilders?.entityVertexConsumers ?: return
@@ -154,23 +128,84 @@ object EntityHighlight {
 
         matrices.push()
         matrices.translate(-camX, -camY, -camZ)
-
         highlighted.removeIf { !it.isAlive }
 
-        fun drawAll(alpha: Float) {
-            val buf = immediate.getBuffer(RenderLayer.getLines())
-            for (entity in highlighted) {
-                if (!entity.isAlive) continue
-                VertexRendering.drawBox(matrices.peek(), buf, entity.boundingBox, r, g, b, alpha)
+        // ── ESP boxes ─────────────────────────────────────────────────
+        if (config.drawingStyle == 0) {
+            fun drawBoxes(alpha: Float) {
+                val buf = immediate.getBuffer(RenderLayer.getLines())
+                for (entity in highlighted) {
+                    if (!entity.isAlive) continue
+                    VertexRendering.drawBox(matrices.peek(), buf, entity.boundingBox, r, g, b, alpha)
+                }
+                (immediate as? VertexConsumerProvider.Immediate)?.draw(RenderLayer.getLines())
             }
-            (immediate as? VertexConsumerProvider.Immediate)?.draw(RenderLayer.getLines())
+            drawBoxes(1.0f)
+            GL11.glDisable(GL11.GL_DEPTH_TEST)
+            drawBoxes(0.3f)
+            GL11.glEnable(GL11.GL_DEPTH_TEST)
         }
 
-        drawAll(1.0f)
+        // ── Tracer lines ──────────────────────────────────────────────
+        // The start point is offset FORWARD from the camera by a small amount so the line
+        // isn't clipped by the near plane. The forward vector is computed from camera yaw/pitch.
+        // Result: line visually starts at crosshair (because the offset point is directly in
+        // front of the camera, projecting to screen center) and extends to the mob.
+        if (config.tracerEnabled) {
+            val count = config.tracerCount.toInt().coerceIn(1, 20)
 
-        GL11.glDisable(GL11.GL_DEPTH_TEST)
-        drawAll(0.3f)
-        GL11.glEnable(GL11.GL_DEPTH_TEST)
+            val targets = highlighted
+                .filter { it.isAlive }
+                .sortedBy { entity ->
+                    val dx = entity.x - camX
+                    val dy = (entity.boundingBox.minY + entity.boundingBox.maxY) / 2.0 - camY
+                    val dz = entity.z - camZ
+                    dx * dx + dy * dy + dz * dz
+                }
+                .take(count)
+
+            if (targets.isNotEmpty()) {
+                // Compute camera forward vector from yaw/pitch
+                val yawRad = Math.toRadians(camera.yaw.toDouble())
+                val pitchRad = Math.toRadians(camera.pitch.toDouble())
+                val fwdX = -Math.sin(yawRad) * Math.cos(pitchRad)
+                val fwdY = -Math.sin(pitchRad)
+                val fwdZ = Math.cos(yawRad) * Math.cos(pitchRad)
+
+                // Offset start 0.5 blocks forward from camera to avoid near-plane clipping.
+                // This point is directly in front of the camera, so it projects to screen center.
+                val startOffset = 0.5
+                val sx = (camX + fwdX * startOffset).toFloat()
+                val sy = (camY + fwdY * startOffset).toFloat()
+                val sz = (camZ + fwdZ * startOffset).toFloat()
+
+                GL11.glDisable(GL11.GL_DEPTH_TEST)
+                val buf = immediate.getBuffer(RenderLayer.getLines())
+                val pose = matrices.peek()
+
+                for (entity in targets) {
+                    val ex = entity.x.toFloat()
+                    val ey = ((entity.boundingBox.minY + entity.boundingBox.maxY) / 2.0).toFloat()
+                    val ez = entity.z.toFloat()
+
+                    val dx = ex - sx; val dy = ey - sy; val dz = ez - sz
+                    val len = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+                    val nx = if (len > 0f) dx / len else 0f
+                    val ny = if (len > 0f) dy / len else 0f
+                    val nz = if (len > 0f) dz / len else 0f
+
+                    buf.vertex(pose, sx, sy, sz)
+                        .color(r, g, b, 1.0f)
+                        .normal(pose, nx, ny, nz)
+                    buf.vertex(pose, ex, ey, ez)
+                        .color(r, g, b, 1.0f)
+                        .normal(pose, nx, ny, nz)
+                }
+
+                (immediate as? VertexConsumerProvider.Immediate)?.draw(RenderLayer.getLines())
+                GL11.glEnable(GL11.GL_DEPTH_TEST)
+            }
+        }
 
         matrices.pop()
     }

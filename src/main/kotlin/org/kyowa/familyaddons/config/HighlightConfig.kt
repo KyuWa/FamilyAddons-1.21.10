@@ -23,4 +23,14 @@ class HighlightConfig {
     @ConfigOption(name = "Drawing Style", desc = "ESP Box draws a wireframe box. Outline draws around the entity model.")
     @ConfigEditorDropdown(values = ["ESP Box", "Outline"])
     var drawingStyle = 0
+
+    @Expose @JvmField
+    @ConfigOption(name = "Tracer Lines", desc = "Draw lines from your crosshair to the nearest highlighted mobs.")
+    @ConfigEditorBoolean
+    var tracerEnabled = false
+
+    @Expose @JvmField
+    @ConfigOption(name = "Tracer Count", desc = "How many of the closest highlighted mobs to draw tracers to (1–20).")
+    @ConfigEditorSlider(minValue = 1f, maxValue = 20f, minStep = 1f)
+    var tracerCount = 5f
 }
