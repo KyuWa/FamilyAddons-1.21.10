@@ -153,9 +153,17 @@ object EntityHighlight {
         // front of the camera, projecting to screen center) and extends to the mob.
         if (config.tracerEnabled) {
             val count = config.tracerCount.toInt().coerceIn(1, 20)
+            val maxBlocks = config.tracerChunkRange.toDouble() * 16.0
+            val maxDistSq = maxBlocks * maxBlocks
 
             val targets = highlighted
-                .filter { it.isAlive }
+                .filter { entity ->
+                    if (!entity.isAlive) return@filter false
+                    val dx = entity.x - camX
+                    val dy = (entity.boundingBox.minY + entity.boundingBox.maxY) / 2.0 - camY
+                    val dz = entity.z - camZ
+                    (dx * dx + dy * dy + dz * dz) <= maxDistSq
+                }
                 .sortedBy { entity ->
                     val dx = entity.x - camX
                     val dy = (entity.boundingBox.minY + entity.boundingBox.maxY) / 2.0 - camY

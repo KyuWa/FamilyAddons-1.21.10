@@ -33,4 +33,9 @@ class HighlightConfig {
     @ConfigOption(name = "Tracer Count", desc = "How many of the closest highlighted mobs to draw tracers to (1–20).")
     @ConfigEditorSlider(minValue = 1f, maxValue = 20f, minStep = 1f)
     var tracerCount = 5f
+
+    @Expose @JvmField
+    @ConfigOption(name = "Tracer Range", desc = "Maximum distance in chunks to draw tracers. Mobs further than this are ignored (ESP is limited to 4 chunks so prob that is best).")
+    @ConfigEditorSlider(minValue = 2f, maxValue = 16f, minStep = 1f)
+    var tracerChunkRange = 4f
 }
