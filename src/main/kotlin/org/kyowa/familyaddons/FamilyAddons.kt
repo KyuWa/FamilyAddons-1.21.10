@@ -47,6 +47,7 @@ object FamilyAddons : ClientModInitializer {
         ItemPrices.register()
         GfsKeybinds.register()
         ArachneTimer.register()
+        GorillaTactics.register()
 
 
 

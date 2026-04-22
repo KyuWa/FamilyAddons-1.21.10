@@ -103,7 +103,13 @@ object EntityHighlight {
         world.entities.forEach { entity ->
             if (!entity.isAlive) return@forEach
             if (nameMatches(entity)) {
-                val target = resolveEntity(entity) ?: entity
+                // FIX: if resolveEntity returns null (nametag stand can't find its real mob
+                // because the mob died this tick), skip entirely. The old `?: entity` fallback
+                // would add the armor stand itself to `highlighted`, causing the tracer to
+                // briefly snap to the stand's position before it despawns — visible flicker.
+                val target = resolveEntity(entity) ?: return@forEach
+                // Defensive: never highlight an invisible nametag stand directly.
+                if (target is ArmorStandEntity && target.isInvisible) return@forEach
                 if (target.isAlive) highlighted.add(target)
             }
         }
@@ -161,6 +167,9 @@ object EntityHighlight {
             val targets = ArrayList<Entity>()
             for (entity in highlighted) {
                 if (!entity.isAlive) continue
+                // FIX: never run a tracer to an invisible nametag armor stand. Belt-and-braces
+                // in case one ever makes it into `highlighted` through some other code path.
+                if (entity is ArmorStandEntity) continue
                 val dx = entity.x - camX
                 val dy = (entity.boundingBox.minY + entity.boundingBox.maxY) / 2.0 - camY
                 val dz = entity.z - camZ

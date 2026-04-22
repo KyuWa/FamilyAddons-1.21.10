@@ -137,6 +137,33 @@ class HudEditorScreen : Screen(Text.literal("FA HUD Editor")) {
             }
         ))
 
+        // Gorilla Tactics Timer
+        val gtScale = GorillaTactics.getScale()
+        val gtPlain = GorillaTactics.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")
+        val gtW = tr.getWidth(gtPlain)
+        val gtX = if (FamilyConfigManager.config.utilities.gorillaHudX == -1)
+            ((sw - gtW * gtScale) / 2f).toInt()
+        else FamilyConfigManager.config.utilities.gorillaHudX
+        val gtY = if (FamilyConfigManager.config.utilities.gorillaHudY == -1)
+            (sh / 2f + 40f).toInt()
+        else FamilyConfigManager.config.utilities.gorillaHudY
+
+        elements.add(HudElement(
+            id = "gorillaTactics", label = "Gorilla Tactics Timer",
+            x = gtX, y = gtY,
+            w = gtW + 4, h = 10,
+            scale = gtScale,
+            canScale = true,
+            onSave = { elem ->
+                FamilyConfigManager.config.utilities.gorillaHudX = elem.x
+                FamilyConfigManager.config.utilities.gorillaHudY = elem.y
+                FamilyConfigManager.config.utilities.gorillaHudScale = "%.1f".format(elem.scale)
+            },
+            renderContent = { ctx, _ ->
+                ctx.drawText(tr, Text.literal(GorillaTactics.PREVIEW_TEXT), 0, 0, 0xFFFFFFFF.toInt(), true)
+            }
+        ))
+
         // Pickobulus Timer
         val pbScale = PickaxeAbility.getScale()
         val pbPlain = PickaxeAbility.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")
