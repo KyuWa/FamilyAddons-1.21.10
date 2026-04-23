@@ -47,7 +47,6 @@ object FamilyAddons : ClientModInitializer {
         ItemPrices.register()
         GfsKeybinds.register()
         ArachneTimer.register()
-        GorillaTactics.register()
 
 
 
@@ -93,6 +92,7 @@ object FamilyAddons : ClientModInitializer {
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             EntityHighlight.rescan()
             BestiaryZoneHighlight.refresh()
+            SharedDisguiseSync.fetchAllNow() // Re-fetch disguises on every server join so they load immediately
         }
     }
 

@@ -35,7 +35,7 @@ class PlayerDisguiseConfig {
     var sheared: Boolean = false
 
     @Expose @JvmField
-    @ConfigOption(name = "Show Friends' Disguises", desc = "See other players' disguises if they also have FamilyAddons. Auto-refreshes every 30 seconds.")
+    @ConfigOption(name = "Show Friends' Disguises", desc = "See other players' disguises if they also have FamilyAddons. Refreshes on game launch and every server join — use Refresh Now for an instant update.")
     @ConfigEditorBoolean
     var showFriendsDisguises: Boolean = true
 
