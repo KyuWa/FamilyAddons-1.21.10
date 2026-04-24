@@ -1,6 +1,5 @@
 package org.kyowa.familyaddons.features
 
-import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.fabricmc.fabric.api.event.player.UseItemCallback
@@ -19,8 +18,6 @@ object GorillaTactics {
     // 3 second Gorilla Tactics teleport window = 60 server ticks
     private const val DURATION_TICKS = 60
 
-    private val COOLDOWN_REGEX = Regex("""This ability is on cooldown for \d+(?:\.\d+)?s""")
-
     @Volatile private var remainingTicks = -1
 
     const val PREVIEW_TEXT = "§6Gorilla Tactics §f2.75s"
@@ -38,8 +35,6 @@ object GorillaTactics {
             cfg.gorillaHudX to cfg.gorillaHudY
         }
     }
-
-    private fun isActive(): Boolean = remainingTicks > 0
 
     private fun isGorillaItem(stack: ItemStack): Boolean {
         if (stack.isEmpty) return false
@@ -81,7 +76,7 @@ object GorillaTactics {
             remainingTicks = -1
         }
 
-        // Right-click starts the timer immediately.
+        // Right-click always starts/restarts the timer, regardless of current state.
         UseItemCallback.EVENT.register { player, _, hand ->
             if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) {
                 return@register ActionResult.PASS
@@ -89,7 +84,6 @@ object GorillaTactics {
             val client = MinecraftClient.getInstance()
             if (player != client.player) return@register ActionResult.PASS
             if (hand != Hand.MAIN_HAND) return@register ActionResult.PASS
-            if (isActive()) return@register ActionResult.PASS
 
             val stack = player.getStackInHand(hand)
             if (isGorillaItem(stack)) {
@@ -97,17 +91,6 @@ object GorillaTactics {
                 FamilyAddons.LOGGER.info("GorillaTactics: timer started")
             }
             ActionResult.PASS
-        }
-
-        // Cooldown message cancels the timer if our click was rejected.
-        ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
-            if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) return@register true
-            val plain = message.string.replace(COLOR_CODE_REGEX, "").trim()
-            if (COOLDOWN_REGEX.containsMatchIn(plain) && remainingTicks > 0) {
-                FamilyAddons.LOGGER.info("GorillaTactics: cancelled at ${remainingTicks}t (cooldown)")
-                remainingTicks = -1
-            }
-            true
         }
 
         HudRenderCallback.EVENT.register { context, _ ->
