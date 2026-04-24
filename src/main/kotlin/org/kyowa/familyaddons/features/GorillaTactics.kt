@@ -1,7 +1,7 @@
 package org.kyowa.familyaddons.features
 
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.fabricmc.fabric.api.event.player.UseItemCallback
 import net.minecraft.client.MinecraftClient
@@ -11,30 +11,17 @@ import net.minecraft.text.Text
 import net.minecraft.util.ActionResult
 import net.minecraft.util.Hand
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
+import org.kyowa.familyaddons.FamilyAddons
 import org.kyowa.familyaddons.config.FamilyConfigManager
 
 object GorillaTactics {
 
     // 3 second Gorilla Tactics teleport window = 60 server ticks
     private const val DURATION_TICKS = 60
-    private const val MS_PER_TICK = 50L
 
-    // If the server never confirms via action bar within this many ticks, cancel the
-    // tentative timer (means the ability failed — cooldown, no mana, etc.).
-    private const val CONFIRM_WINDOW_TICKS = 40 // 2 seconds
-
-    // Hypixel sends this as an overlay (action bar) when the ability actually fires.
-    private val TRIGGER_REGEX = Regex("""-\d+ Mana \(Gorilla Tactics\)""")
-
-    // Chat message when ability fails due to cooldown. The seconds value is dynamic.
     private val COOLDOWN_REGEX = Regex("""This ability is on cooldown for \d+(?:\.\d+)?s""")
 
-    // ── State — tick-based (client ticks track server ticks on Hypixel) ──
-    private var clientTick = 0
-    private var endTick = -1                  // Tick at which the 3s window ends; -1 = not running
-    private var tentativeStartTick = -1       // When we optimistically started from a click
-    private var confirmed = false
-    private var lastTickWallMs = 0L           // Wall-clock time of the most recent tick (for sub-tick smoothing)
+    @Volatile private var remainingTicks = -1
 
     const val PREVIEW_TEXT = "§6Gorilla Tactics §f2.75s"
 
@@ -52,18 +39,11 @@ object GorillaTactics {
         }
     }
 
-    /** True if a timer is currently counting down. */
-    private fun isActive(): Boolean = endTick >= 0 && clientTick < endTick
+    private fun isActive(): Boolean = remainingTicks > 0
 
-    /**
-     * Returns true if the stack looks like the Tactical Insertion ability item.
-     * Checks the SkyBlock NBT id first (most reliable), then falls back to lore scan
-     * for any other item that might grant Gorilla Tactics in the future.
-     */
     private fun isGorillaItem(stack: ItemStack): Boolean {
         if (stack.isEmpty) return false
 
-        // Primary check: SkyBlock NBT id
         val customData = stack.get(DataComponentTypes.CUSTOM_DATA)
         if (customData != null) {
             val nbt = customData.copyNbt()
@@ -72,7 +52,6 @@ object GorillaTactics {
             if (id == "TACTICAL_INSERTION") return true
         }
 
-        // Fallback: lore scan (future-proofs against other items gaining the ability)
         val sb = StringBuilder()
         sb.append(stack.name.string)
         val lore = stack.get(DataComponentTypes.LORE)
@@ -84,33 +63,25 @@ object GorillaTactics {
                 text.contains("RIGHT CLICK", ignoreCase = true)
     }
 
-    /** Clear all timer state. */
-    private fun clearTimer() {
-        endTick = -1
-        tentativeStartTick = -1
-        confirmed = false
-    }
-
     fun register() {
-        // ── Master tick: advance counter & handle tentative timeouts ───
-        ClientTickEvents.END_CLIENT_TICK.register { _ ->
-            clientTick++
-            lastTickWallMs = System.currentTimeMillis()
-
-            // Auto-cancel tentative if server never confirmed within window
-            if (tentativeStartTick >= 0 && !confirmed) {
-                if (clientTick - tentativeStartTick > CONFIRM_WINDOW_TICKS) {
-                    clearTimer()
-                }
-            }
-
-            // Auto-clear when timer expires naturally
-            if (endTick >= 0 && clientTick >= endTick) {
-                clearTimer()
-            }
+        // Decrement once per Hypixel server tick (via CommonPingS2CPacket).
+        // When the server lags, packets stop arriving and this doesn't fire,
+        // so the countdown naturally pauses.
+        ServerTickTracker.onTick {
+            if (remainingTicks > 0) remainingTicks--
         }
 
-        // ── Instant client-side trigger on right-click ─────────────────
+        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
+            ServerTickTracker.reset()
+            // Don't clear the timer — Hypixel fires JOIN on every world transition
+            // and the ability may still be active. Tick counter is world-agnostic.
+        }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
+            ServerTickTracker.reset()
+            remainingTicks = -1
+        }
+
+        // Right-click starts the timer immediately.
         UseItemCallback.EVENT.register { player, _, hand ->
             if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) {
                 return@register ActionResult.PASS
@@ -118,66 +89,40 @@ object GorillaTactics {
             val client = MinecraftClient.getInstance()
             if (player != client.player) return@register ActionResult.PASS
             if (hand != Hand.MAIN_HAND) return@register ActionResult.PASS
-
-            // Ignore right-clicks while a timer is already active.
-            // This prevents re-triggering / double-timers when spamming the ability.
             if (isActive()) return@register ActionResult.PASS
 
             val stack = player.getStackInHand(hand)
             if (isGorillaItem(stack)) {
-                endTick = clientTick + DURATION_TICKS
-                tentativeStartTick = clientTick
-                confirmed = false
+                remainingTicks = DURATION_TICKS
+                FamilyAddons.LOGGER.info("GorillaTactics: timer started")
             }
             ActionResult.PASS
         }
 
-        // ── Chat / action bar listener ─────────────────────────────────
-        ClientReceiveMessageEvents.ALLOW_GAME.register { message, overlay ->
+        // Cooldown message cancels the timer if our click was rejected.
+        ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
             if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) return@register true
             val plain = message.string.replace(COLOR_CODE_REGEX, "").trim()
-
-            // Cooldown failure — cancel tentative timer immediately
-            if (COOLDOWN_REGEX.containsMatchIn(plain)) {
-                if (tentativeStartTick >= 0 && !confirmed) {
-                    clearTimer()
-                }
-                return@register true
-            }
-
-            // Success confirmation — only from overlay (action bar), not chat
-            if (overlay && TRIGGER_REGEX.containsMatchIn(plain)) {
-                if (tentativeStartTick >= 0 && clientTick - tentativeStartTick <= CONFIRM_WINDOW_TICKS) {
-                    // Tentative timer is running — just confirm it, keep the tick alignment
-                    // from the click for accurate countdown.
-                    confirmed = true
-                } else if (!isActive()) {
-                    // No tentative timer and no active timer — fall back to starting fresh.
-                    endTick = clientTick + DURATION_TICKS
-                    tentativeStartTick = clientTick
-                    confirmed = true
-                }
-                // If a timer is already running and confirmed, do nothing (don't reset).
+            if (COOLDOWN_REGEX.containsMatchIn(plain) && remainingTicks > 0) {
+                FamilyAddons.LOGGER.info("GorillaTactics: cancelled at ${remainingTicks}t (cooldown)")
+                remainingTicks = -1
             }
             true
         }
 
-        // ── HUD render (tick-based with sub-tick smoothing) ───────────
         HudRenderCallback.EVENT.register { context, _ ->
             if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) return@register
-            if (!isActive()) return@register
+            val ticks = remainingTicks
+            if (ticks <= 0) return@register
 
-            // Compute remaining ms using ticks as the source of truth.
-            // Sub-tick interpolation: clamp wall-clock delta since the last tick to [0, 50ms]
-            // so lag spikes don't make the display jump (or go backwards).
-            val ticksRemaining = endTick - clientTick
-            val sinceTickMs = (System.currentTimeMillis() - lastTickWallMs).coerceIn(0L, MS_PER_TICK)
-            val remainingMs = (ticksRemaining * MS_PER_TICK) - sinceTickMs
-            if (remainingMs <= 0) return@register
+            // Smooth display: subtract fractional tick since the last server tick.
+            // Freezes during lag (the tracker returns 0) instead of drifting.
+            val fractional = ServerTickTracker.fractionalTicksSinceLastTick()
+            val displayTicks = (ticks - fractional).coerceAtLeast(0.0)
 
             val client = MinecraftClient.getInstance()
             val tr = client.textRenderer
-            val seconds = remainingMs / 1000.0
+            val seconds = displayTicks * 0.05
             val text = "§6Gorilla Tactics §f${"%.2f".format(seconds)}s"
             val scale = getScale()
             val tw = tr.getWidth(text.replace(COLOR_CODE_REGEX, ""))

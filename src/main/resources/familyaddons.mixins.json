@@ -12,7 +12,8 @@
     "EntityOutlineMixin",
     "EntityCaptureMixin",
     "PlayerDisguiseMixin",
-    "HotbarScrollMixin"
+    "HotbarScrollMixin",
+    "ServerTickPacketMixin"
   ],
   "injectors": {
     "defaultRequire": 1
