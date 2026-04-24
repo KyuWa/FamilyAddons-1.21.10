@@ -11,6 +11,7 @@ import net.minecraft.client.util.math.MatrixStack
 import net.minecraft.entity.Entity
 import net.minecraft.entity.LivingEntity
 import net.minecraft.entity.decoration.ArmorStandEntity
+import net.minecraft.entity.player.PlayerEntity
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
 import org.kyowa.familyaddons.config.FamilyConfigManager
 import org.lwjgl.opengl.GL11
@@ -56,15 +57,32 @@ object EntityHighlight {
         return names.any { n -> name.contains(n) || customName?.contains(n) == true }
     }
 
+    /**
+     * True if [entity] represents a real connected player and must NEVER be highlighted.
+     *
+     * On Hypixel SkyBlock, mob NPCs are spawned as PlayerEntity instances (full player skins,
+     * custom AI). A real player can be told apart from an NPC because real players have an
+     * entry in the tab list (PlayerListEntry); NPC mobs do not. This is the same check used
+     * by SkyHanni and Odin to avoid hitting NPCs with anti-cheat-style filters.
+     *
+     * Returns false for non-player entities (mobs, animals, armor stands etc.).
+     */
+    private fun isRealPlayer(entity: Entity): Boolean {
+        if (entity !is PlayerEntity) return false
+        val handler = MinecraftClient.getInstance().networkHandler ?: return false
+        // The local player always has a PlayerListEntry — covered correctly here.
+        return handler.getPlayerListEntry(entity.uuid) != null
+    }
+
     private fun resolveEntity(entity: Entity): Entity? {
         if (entity is ArmorStandEntity && entity.isInvisible) {
             val world = MinecraftClient.getInstance().world ?: return null
-            val player = MinecraftClient.getInstance().player
             val byId = world.getEntityById(entity.id - 1)
-            if (byId != null && byId !is ArmorStandEntity && byId != player && byId.isAlive) return byId
+            // Reject the id-1 candidate if it's any real connected player (not just self).
+            if (byId != null && byId !is ArmorStandEntity && !isRealPlayer(byId) && byId.isAlive) return byId
             val candidates = world.getEntitiesByClass(
                 LivingEntity::class.java, entity.boundingBox.expand(0.5, 1.5, 0.5)
-            ) { it !is ArmorStandEntity && it != player && it.isAlive }
+            ) { it !is ArmorStandEntity && !isRealPlayer(it) && it.isAlive }
             return candidates.minByOrNull { val dx = it.x - entity.x; val dz = it.z - entity.z; dx*dx + dz*dz }
         }
         return entity
@@ -102,6 +120,11 @@ object EntityHighlight {
         if (names.isEmpty()) return
         world.entities.forEach { entity ->
             if (!entity.isAlive) return@forEach
+            // Skip any real connected player up-front. This prevents matches like the search
+            // term "dragon" highlighting a player named "dragonslayer213". NPC mobs that use
+            // player skins (Hypixel's fake-player NPCs) pass this check because they are not
+            // in the tab list — they will still be highlighted normally.
+            if (isRealPlayer(entity)) return@forEach
             if (nameMatches(entity)) {
                 // FIX: if resolveEntity returns null (nametag stand can't find its real mob
                 // because the mob died this tick), skip entirely. The old `?: entity` fallback
@@ -110,6 +133,10 @@ object EntityHighlight {
                 val target = resolveEntity(entity) ?: return@forEach
                 // Defensive: never highlight an invisible nametag stand directly.
                 if (target is ArmorStandEntity && target.isInvisible) return@forEach
+                // Defensive: resolveEntity already filters real players, but double-check in
+                // case `entity` itself was a nameMatches-passing player (impossible after the
+                // earlier guard, but cheap insurance).
+                if (isRealPlayer(target)) return@forEach
                 if (target.isAlive) highlighted.add(target)
             }
         }
