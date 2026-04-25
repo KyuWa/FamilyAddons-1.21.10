@@ -1,12 +1,19 @@
 package org.kyowa.familyaddons.features
 
 import com.google.gson.JsonParser
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
 import net.minecraft.client.gui.screen.Screen
 import net.minecraft.client.gui.screen.TitleScreen
 import net.minecraft.client.gui.widget.ButtonWidget
+import net.minecraft.text.ClickEvent
+import net.minecraft.text.HoverEvent
+import net.minecraft.text.MutableText
+import net.minecraft.text.Style
 import net.minecraft.text.Text
 import org.kyowa.familyaddons.FamilyAddons
 import org.kyowa.familyaddons.config.FamilyConfigManager
@@ -44,6 +51,13 @@ object AutoUpdater {
     var skipped = false
         private set
 
+    // Tracks whether the last network event was a DISCONNECT (or initial state).
+    // Hypixel fires JOIN on every world transition; we only want to notify when
+    // the player has actually (re)connected from the server list — i.e. when a
+    // JOIN follows a DISCONNECT, not a world hop. Starts true so the first JOIN
+    // after launch counts as a real connect.
+    @Volatile private var freshConnect: Boolean = true
+
     fun register() {
         if (checked) return
         checked = true
@@ -65,6 +79,124 @@ object AutoUpdater {
             if (AutoUpdater.skipped) return@register
             MinecraftClient.getInstance().execute {
                 MinecraftClient.getInstance().setScreen(UpdatePromptScreen(screen))
+            }
+        }
+
+        // ── /faupdate client command — invoked by clicking the chat notification ──
+        ClientCommandRegistrationCallback.EVENT.register { dispatcher, _ ->
+            dispatcher.register(
+                literal("faupdate").executes {
+                    triggerDownloadFromChat()
+                    1
+                }
+            )
+        }
+
+        // ── Chat notification only on a fresh server connect ──
+        // Hypixel fires JOIN on every world transition (hub → island → dungeon, etc.),
+        // so we gate on `freshConnect`: only fire if we just (re)connected from the
+        // server list. Set back to false after firing so subsequent world hops don't
+        // re-trigger; reset to true on DISCONNECT so the next real reconnect fires it.
+        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
+            if (!FamilyConfigManager.config.general.autoUpdaterEnabled) return@register
+            if (!updateAvailable) return@register
+            if (downloaded) return@register   // already downloaded (e.g. via title-screen Yes)
+            if (downloading) return@register  // currently downloading (e.g. title-screen Yes in flight)
+            if (!freshConnect) return@register
+            freshConnect = false
+            // Delay slightly so the notif appears AFTER Hypixel's join messages
+            // (otherwise it gets buried under lobby spam).
+            CompletableFuture.runAsync {
+                Thread.sleep(1500)
+                MinecraftClient.getInstance().execute { sendUpdateChatNotification() }
+            }
+        }
+
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
+            freshConnect = true
+        }
+    }
+
+    private fun sendUpdateChatNotification() {
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player ?: return
+        val latest = latestVersion ?: return
+        val current = FamilyAddons.VERSION
+
+        // Top divider
+        player.sendMessage(Text.literal("§8§m                                                  "), false)
+
+        // Header
+        player.sendMessage(Text.literal("§6§lFamilyAddons §r§7» §eUpdate Available"), false)
+
+        // Version line
+        player.sendMessage(Text.literal("§7Version §c$current §7→ §a$latest"), false)
+
+        // Clickable action line
+        val click: MutableText = (Text.literal("§8» §b§n[Click here to update]") as MutableText)
+            .styled { s: Style ->
+                s.withClickEvent(ClickEvent.RunCommand("/faupdate"))
+                    .withHoverEvent(
+                        HoverEvent.ShowText(
+                            Text.literal(
+                                "§eDownloads FamilyAddons §a$latest§e and removes the old jar.\n" +
+                                        "§7You'll need to restart Minecraft after the download finishes."
+                            )
+                        )
+                    )
+            }
+        player.sendMessage(click, false)
+
+        // Bottom divider
+        player.sendMessage(Text.literal("§8§m                                                  "), false)
+    }
+
+    /**
+     * Called when the user clicks the chat notification (via /faupdate).
+     * Opens a compact in-game version of the update prompt with release notes
+     * and Yes/No buttons — same layout as the title-screen popup but smaller.
+     */
+    fun triggerDownloadFromChat() {
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player
+
+        if (!updateAvailable || downloadUrl == null) {
+            player?.sendMessage(Text.literal("§6[FA] §7No update available."), false)
+            return
+        }
+        if (downloaded) {
+            player?.sendMessage(Text.literal("§6[FA] §aAlready downloaded — restart Minecraft to apply."), false)
+            return
+        }
+
+        // Open the compact prompt on the main thread.
+        mc.execute {
+            mc.setScreen(InGameUpdatePromptScreen())
+        }
+    }
+
+    /**
+     * Internal: actually performs the download and reports progress via chat.
+     * Called by InGameUpdatePromptScreen after the user clicks "Yes".
+     */
+    internal fun performDownloadWithChatFeedback() {
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player
+
+        if (downloading) {
+            player?.sendMessage(Text.literal("§6[FA] §7Already downloading…"), false)
+            return
+        }
+
+        player?.sendMessage(Text.literal("§6[FA] §eDownloading FamilyAddons §a${latestVersion}§e…"), false)
+
+        startDownload { success ->
+            val p = MinecraftClient.getInstance().player ?: return@startDownload
+            if (success) {
+                p.sendMessage(Text.literal("§6[FA] §aDownload complete!"), false)
+                p.sendMessage(Text.literal("§6[FA] §ePlease §lrestart Minecraft§r§e to apply the update."), false)
+            } else {
+                p.sendMessage(Text.literal("§6[FA] §cDownload failed — check logs. Try again with §f/faupdate§c."), false)
             }
         }
     }
@@ -318,4 +450,104 @@ class UpdatePromptScreen(private val parent: Screen) : Screen(Text.literal("Fami
     }
 
     override fun shouldCloseOnEsc() = false
+}
+
+/**
+ * In-game variant of UpdatePromptScreen — same Yes/No layout, release notes,
+ * and dimensions as the title-screen popup. Closing returns to gameplay.
+ */
+class InGameUpdatePromptScreen : Screen(Text.literal("FamilyAddons Update")) {
+
+    private var statusText: String? = null
+
+    override fun init() {
+        val centerX = width / 2
+        val notes = AutoUpdater.releaseNotes
+        // Match UpdatePromptScreen: base 110 + 10 per note line
+        val boxH = 110 + (notes.size * 10).coerceAtLeast(0)
+        val boxY = height / 2 - boxH / 2
+
+        addDrawableChild(
+            ButtonWidget.builder(Text.literal("§aYes, update now")) {
+                if (AutoUpdater.downloading) return@builder
+                MinecraftClient.getInstance().setScreen(null) // back to game
+                AutoUpdater.performDownloadWithChatFeedback()
+            }
+                .dimensions(centerX - 105, boxY + boxH - 30, 100, 20)
+                .build()
+        )
+
+        addDrawableChild(
+            ButtonWidget.builder(Text.literal("§cNo, skip")) {
+                MinecraftClient.getInstance().setScreen(null) // back to game
+            }
+                .dimensions(centerX + 5, boxY + boxH - 30, 100, 20)
+                .build()
+        )
+    }
+
+    override fun render(context: DrawContext, mouseX: Int, mouseY: Int, delta: Float) {
+        // Slightly lighter dim than the title-screen version so the world stays visible
+        context.fill(0, 0, width, height, 0x99000000.toInt())
+
+        val centerX = width / 2
+        val notes = AutoUpdater.releaseNotes
+        val boxW = 300
+        val boxH = 110 + (notes.size * 10).coerceAtLeast(0)
+        val boxY = height / 2 - boxH / 2
+        val boxX = centerX - boxW / 2
+
+        // Background + border
+        context.fill(boxX, boxY, boxX + boxW, boxY + boxH, 0xEE1A1A2E.toInt())
+        context.fill(boxX,        boxY,        boxX + boxW,     boxY + 1,        0xFF6C63FF.toInt())
+        context.fill(boxX,        boxY + boxH, boxX + boxW,     boxY + boxH + 1, 0xFF6C63FF.toInt())
+        context.fill(boxX,        boxY,        boxX + 1,        boxY + boxH,     0xFF6C63FF.toInt())
+        context.fill(boxX + boxW, boxY,        boxX + boxW + 1, boxY + boxH,     0xFF6C63FF.toInt())
+
+        val tr = textRenderer
+        val latest = AutoUpdater.latestVersion ?: "?"
+
+        // Title
+        val title = "§e§lFamilyAddons Update Available"
+        context.drawText(tr, title, centerX - tr.getWidth(title.replace(Regex("§."), "")) / 2, boxY + 10, -1, true)
+
+        // Version line
+        val versionLine = "§fVersion §b$latest §7(MC ${FamilyAddons.MC_VERSION})"
+        context.drawText(tr, versionLine, centerX - tr.getWidth(versionLine.replace(Regex("§."), "")) / 2, boxY + 24, -1, true)
+
+        // Divider
+        context.fill(boxX + 10, boxY + 36, boxX + boxW - 10, boxY + 37, 0x886C63FF.toInt())
+
+        // Release notes
+        if (notes.isNotEmpty()) {
+            val notesLabel = "§7What's new:"
+            context.drawText(tr, notesLabel, boxX + 10, boxY + 42, -1, false)
+            notes.forEachIndexed { i, line ->
+                val clean = line.removePrefix("- ").removePrefix("* ").replace("**", "")
+                val display = "§f- §7$clean"
+                val maxW = boxW - 20
+                val truncated = if (tr.getWidth(display.replace(Regex("§."), "")) > maxW) {
+                    var t = display
+                    while (tr.getWidth(t.replace(Regex("§."), "") + "...") > maxW && t.length > 4)
+                        t = t.dropLast(1)
+                    "$t..."
+                } else display
+                context.drawText(tr, truncated, boxX + 10, boxY + 54 + i * 10, -1, false)
+            }
+        } else {
+            val noNotes = "§7No release notes available."
+            context.drawText(tr, noNotes, centerX - tr.getWidth(noNotes.replace(Regex("§."), "")) / 2, boxY + 44, -1, false)
+        }
+
+        // Status text under the box (downloading / error)
+        val status = statusText
+        if (status != null) {
+            context.drawText(tr, status, centerX - tr.getWidth(status.replace(Regex("§."), "")) / 2, boxY + boxH + 6, -1, true)
+        }
+
+        super.render(context, mouseX, mouseY, delta)
+    }
+
+    // Allow ESC to dismiss — unlike the title-screen version, this is mid-game.
+    override fun shouldCloseOnEsc() = true
 }
