@@ -74,25 +74,37 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         String mobId = null;
         boolean baby = false;
         boolean sheared = false;
+        float customScale = 1.0f;
 
         if (isSelf) {
             if (!PlayerDisguise.INSTANCE.isEnabled()) return;
             mobId = PlayerDisguise.INSTANCE.getMobId();
             baby = PlayerDisguise.INSTANCE.isBaby();
             sheared = PlayerDisguise.INSTANCE.isSheared();
+            customScale = PlayerDisguise.INSTANCE.getCustomScale();
         } else {
             int scope = PlayerDisguise.INSTANCE.getScope();
             if (PlayerDisguise.INSTANCE.isEnabled() && scope == 1) {
+                // "Everyone" scope — apply OUR settings to all players.
                 mobId = PlayerDisguise.INSTANCE.getMobId();
                 baby = PlayerDisguise.INSTANCE.isBaby();
                 sheared = PlayerDisguise.INSTANCE.isSheared();
+                customScale = PlayerDisguise.INSTANCE.getCustomScale();
             } else {
                 SharedDisguiseSync.SyncedDisguise synced = SharedDisguiseSync.INSTANCE.getDisguise(username);
                 if (synced == null) return;
                 mobId = synced.getMobId();
                 baby = synced.getBaby();
                 sheared = synced.getSheared();
+                customScale = synced.getCustomScale();
             }
+        }
+
+        // When custom scaling is active (i.e. the effective scale is anything other
+        // than 1.0), the baby toggle is overridden — manual scale takes over, since
+        // baby is just a built-in shrink. Sheared still applies normally.
+        if (customScale != 1.0f) {
+            baby = false;
         }
 
         if (mobId == null || mobId.isEmpty()) return;
@@ -103,7 +115,7 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
 
         // ── Ender Dragon special path ─────────────────────────────────
         if (type == EntityType.ENDER_DRAGON) {
-            renderAsEnderDragon(client, player, playerState, matrixStack, queue, cameraRenderState, username, ci);
+            renderAsEnderDragon(client, player, playerState, matrixStack, queue, cameraRenderState, username, customScale, ci);
             return;
         }
         // ─────────────────────────────────────────────────────────────
@@ -222,7 +234,19 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         mobState.y = playerState.y;
         mobState.z = playerState.z;
 
-        try { renderer.render(mobState, matrixStack, queue, cameraRenderState); } catch (Exception e) { return; }
+        // Apply custom scale around the renderer.render call only.
+        // The nametag is submitted OUTSIDE the scale block so it stays at normal
+        // player height (the scaled mob would otherwise drag the nametag with it).
+        boolean scaled = customScale != 1.0f;
+        if (scaled) {
+            matrixStack.push();
+            matrixStack.scale(customScale, customScale, customScale);
+        }
+        try { renderer.render(mobState, matrixStack, queue, cameraRenderState); } catch (Exception e) {
+            if (scaled) matrixStack.pop();
+            return;
+        }
+        if (scaled) matrixStack.pop();
 
         if (playerState.displayName != null && playerState.nameLabelPos != null) {
             queue.submitLabel(matrixStack, playerState.nameLabelPos, 0, playerState.displayName,
@@ -240,6 +264,7 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
             OrderedRenderCommandQueue queue,
             CameraRenderState cameraRenderState,
             String username,
+            float customScale,
             CallbackInfo ci) {
 
         // Get or create a cached dragon entity
@@ -315,10 +340,19 @@ public abstract class PlayerDisguiseMixin<T extends LivingEntity,
         dragonState.age = playerState.age;
         dragonState.invisible = false;
 
-        // Render the dragon in place of the player
-        try { renderer.render(dragonState, matrixStack, queue, cameraRenderState); } catch (Exception e) { return; }
+        // Render the dragon in place of the player, scaled if custom scaling is active.
+        boolean scaled = customScale != 1.0f;
+        if (scaled) {
+            matrixStack.push();
+            matrixStack.scale(customScale, customScale, customScale);
+        }
+        try { renderer.render(dragonState, matrixStack, queue, cameraRenderState); } catch (Exception e) {
+            if (scaled) matrixStack.pop();
+            return;
+        }
+        if (scaled) matrixStack.pop();
 
-        // Still render the player's nametag above the dragon
+        // Still render the player's nametag above the dragon (at unscaled position)
         if (playerState.displayName != null && playerState.nameLabelPos != null) {
             queue.submitLabel(matrixStack, playerState.nameLabelPos, 0, playerState.displayName,
                     !playerState.sneaking, playerState.light, playerState.squaredDistanceToCamera, cameraRenderState);

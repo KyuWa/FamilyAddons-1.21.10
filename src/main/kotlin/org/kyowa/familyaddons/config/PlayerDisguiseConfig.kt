@@ -4,6 +4,7 @@ import com.google.gson.annotations.Expose
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorButton
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorDropdown
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorText
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption
 
@@ -33,6 +34,16 @@ class PlayerDisguiseConfig {
     @ConfigOption(name = "Sheared", desc = "Render the mob as sheared. Works with sheep (removes wool) and snow golem (removes pumpkin).")
     @ConfigEditorBoolean
     var sheared: Boolean = false
+
+    @Expose @JvmField
+    @ConfigOption(name = "Custom Scaling", desc = "Manually scale the disguise model. Overrides the Baby toggle (baby is ignored when this is on). Sheared still applies.")
+    @ConfigEditorBoolean
+    var customScalingEnabled: Boolean = false
+
+    @Expose @JvmField
+    @ConfigOption(name = "Custom Scale (x10)", desc = "Scale multiplier x10. 10 = 1.0 (normal), 5 = 0.5 (half), 20 = 2.0 (double), 50 = 5.0 (max). Only used when Custom Scaling is on.")
+    @ConfigEditorSlider(minValue = 1f, maxValue = 50f, minStep = 1f)
+    var customScaleTenths: Float = 10f
 
     @Expose @JvmField
     @ConfigOption(name = "Show Friends' Disguises", desc = "See other players' disguises if they also have FamilyAddons. Refreshes on game launch and every server join — use Refresh Now for an instant update.")

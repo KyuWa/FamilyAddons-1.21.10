@@ -17,7 +17,17 @@ object SharedDisguiseSync {
     private const val WORKER_URL = "https://disguise.kyowa.uk"
     private const val SECRET = "kyowa-fa-secret-2025"
 
-    data class SyncedDisguise(val mobId: String, val baby: Boolean, val sheared: Boolean = false)
+    /**
+     * customScale defaults to 1.0f for backwards compatibility — disguises pushed
+     * by older clients (or by the worker before it knew about customScale) won't
+     * have the field, and we treat that as "no scale change".
+     */
+    data class SyncedDisguise(
+        val mobId: String,
+        val baby: Boolean,
+        val sheared: Boolean = false,
+        val customScale: Float = 1.0f
+    )
 
     @Volatile
     var remoteDisguises: Map<String, SyncedDisguise> = emptyMap()
@@ -30,6 +40,7 @@ object SharedDisguiseSync {
     private var lastPushedMobId: String? = null
     private var lastPushedBaby: Boolean? = null
     private var lastPushedSheared: Boolean? = null
+    private var lastPushedScale: Float? = null
 
     // ── Push own disguise ─────────────────────────────────────────────
     fun pushMyDisguise() {
@@ -38,9 +49,15 @@ object SharedDisguiseSync {
         val username = MinecraftClient.getInstance().player?.name?.string
             ?: MinecraftClient.getInstance().session?.username
             ?: return
+
+        // Compute effective scale: 1.0 if scaling is off, else the clamped slider value (in tenths) divided by 10.
+        val effectiveScale = if (cfg.customScalingEnabled)
+            (cfg.customScaleTenths / 10f).coerceIn(0.1f, 5.0f)
+        else 1.0f
+
         CompletableFuture.runAsync {
             try {
-                val body = """{"username":"$username","mobId":"${cfg.mobId}","baby":${cfg.baby},"sheared":${cfg.sheared}}"""
+                val body = """{"username":"$username","mobId":"${cfg.mobId}","baby":${cfg.baby},"sheared":${cfg.sheared},"customScale":$effectiveScale}"""
                 val req = HttpRequest.newBuilder()
                     .uri(URI.create("$WORKER_URL/disguise"))
                     .header("Content-Type", "application/json")
@@ -48,7 +65,7 @@ object SharedDisguiseSync {
                     .PUT(HttpRequest.BodyPublishers.ofString(body))
                     .build()
                 http.send(req, HttpResponse.BodyHandlers.ofString())
-                FamilyAddons.LOGGER.info("SharedDisguiseSync: pushed $username → ${cfg.mobId}")
+                FamilyAddons.LOGGER.info("SharedDisguiseSync: pushed $username → ${cfg.mobId} (scale=$effectiveScale)")
             } catch (e: Exception) {
                 FamilyAddons.LOGGER.warn("SharedDisguiseSync: push failed: ${e.message}")
             }
@@ -93,7 +110,10 @@ object SharedDisguiseSync {
                     val mobId = obj.get("mobId")?.asString ?: continue
                     val baby = obj.get("baby")?.asBoolean ?: false
                     val sheared = obj.get("sheared")?.asBoolean ?: false
-                    result[name.lowercase()] = SyncedDisguise(mobId, baby, sheared)
+                    // Default to 1.0 if the worker hasn't been updated yet or the
+                    // disguise was pushed by a pre-customScale client.
+                    val customScale = obj.get("customScale")?.asFloat ?: 1.0f
+                    result[name.lowercase()] = SyncedDisguise(mobId, baby, sheared, customScale)
                 }
                 remoteDisguises = result
                 FamilyAddons.LOGGER.info("SharedDisguiseSync: fetched ${result.size} disguises")
@@ -108,6 +128,7 @@ object SharedDisguiseSync {
         lastPushedMobId = null
         lastPushedBaby = null
         lastPushedSheared = null
+        lastPushedScale = null
     }
 
     fun register() {
@@ -118,15 +139,21 @@ object SharedDisguiseSync {
         ClientTickEvents.END_CLIENT_TICK.register { _ ->
             if (tickCounter++ % 20 != 0) return@register
             val cfg = FamilyConfigManager.config.playerDisguise
+            // Compute the effective scale we'd push so the diff matches what's stored remotely.
+            val effectiveScale = if (cfg.customScalingEnabled)
+                (cfg.customScaleTenths / 10f).coerceIn(0.1f, 5.0f)
+            else 1.0f
             val changed = cfg.enabled != lastPushedEnabled ||
                     cfg.mobId != lastPushedMobId ||
                     cfg.baby != lastPushedBaby ||
-                    cfg.sheared != lastPushedSheared
+                    cfg.sheared != lastPushedSheared ||
+                    effectiveScale != lastPushedScale
             if (changed) {
                 lastPushedEnabled = cfg.enabled
                 lastPushedMobId = cfg.mobId
                 lastPushedBaby = cfg.baby
                 lastPushedSheared = cfg.sheared
+                lastPushedScale = effectiveScale
                 if (cfg.enabled) pushMyDisguise() else deleteMyDisguise()
             }
         }
