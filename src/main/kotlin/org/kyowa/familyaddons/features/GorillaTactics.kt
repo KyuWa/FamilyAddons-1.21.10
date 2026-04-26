@@ -12,6 +12,7 @@ import net.minecraft.util.Hand
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
 import org.kyowa.familyaddons.FamilyAddons
 import org.kyowa.familyaddons.config.FamilyConfigManager
+import kotlin.math.ceil
 
 object GorillaTactics {
 
@@ -20,13 +21,20 @@ object GorillaTactics {
 
     @Volatile private var remainingTicks = -1
 
-    const val PREVIEW_TEXT = "§6Gorilla Tactics §f2.75s"
+    // Both preview variants used by the HUD editor — depends on selected unit.
+    const val PREVIEW_TEXT_SECONDS = "§6Gorilla Tactics §f2.75s"
+    const val PREVIEW_TEXT_TICKS = "§6Gorilla Tactics §f55t"
 
-    fun getScale() = FamilyConfigManager.config.utilities.gorillaHudScale
+    /** Active preview text based on the configured display unit. */
+    val PREVIEW_TEXT: String
+        get() = if (FamilyConfigManager.config.soloKuudra.gorillaDisplayUnit == 1)
+            PREVIEW_TEXT_TICKS else PREVIEW_TEXT_SECONDS
+
+    fun getScale() = FamilyConfigManager.config.soloKuudra.gorillaHudScale
         .toFloatOrNull()?.coerceAtLeast(0.5f) ?: 1.5f
 
     fun resolvePos(sw: Int, sh: Int, scale: Float, textWidth: Int): Pair<Int, Int> {
-        val cfg = FamilyConfigManager.config.utilities
+        val cfg = FamilyConfigManager.config.soloKuudra
         return if (cfg.gorillaHudX == -1 || cfg.gorillaHudY == -1) {
             val x = ((sw - textWidth * scale) / 2f).toInt()
             val y = (sh / 2f + 40f).toInt()
@@ -78,7 +86,7 @@ object GorillaTactics {
 
         // Right-click always starts/restarts the timer, regardless of current state.
         UseItemCallback.EVENT.register { player, _, hand ->
-            if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) {
+            if (!FamilyConfigManager.config.soloKuudra.gorillaTacticsTimer) {
                 return@register ActionResult.PASS
             }
             val client = MinecraftClient.getInstance()
@@ -94,7 +102,7 @@ object GorillaTactics {
         }
 
         HudRenderCallback.EVENT.register { context, _ ->
-            if (!FamilyConfigManager.config.utilities.gorillaTacticsTimer) return@register
+            if (!FamilyConfigManager.config.soloKuudra.gorillaTacticsTimer) return@register
             val ticks = remainingTicks
             if (ticks <= 0) return@register
 
@@ -105,8 +113,7 @@ object GorillaTactics {
 
             val client = MinecraftClient.getInstance()
             val tr = client.textRenderer
-            val seconds = displayTicks * 0.05
-            val text = "§6Gorilla Tactics §f${"%.2f".format(seconds)}s"
+            val text = formatDisplay(displayTicks)
             val scale = getScale()
             val tw = tr.getWidth(text.replace(COLOR_CODE_REGEX, ""))
             val (x, y) = resolvePos(context.scaledWindowWidth, context.scaledWindowHeight, scale, tw)
@@ -117,6 +124,27 @@ object GorillaTactics {
             matrices.scale(scale, scale)
             context.drawText(tr, Text.literal(text), 0, 0, -1, true)
             matrices.popMatrix()
+        }
+    }
+
+    /**
+     * Renders the countdown text in the configured unit.
+     *  - Seconds: smooth fractional, e.g. "2.85s"
+     *  - Ticks:   integer, e.g. "57t" — uses ceil so the visible number drops at
+     *             the same instant the underlying tick changes (otherwise the
+     *             display would jump from N to N-1 only when the next ping
+     *             packet arrives, which is up to 50 ms late).
+     */
+    private fun formatDisplay(displayTicks: Double): String {
+        return when (FamilyConfigManager.config.soloKuudra.gorillaDisplayUnit) {
+            1 -> {
+                val whole = ceil(displayTicks).toInt().coerceAtLeast(0)
+                "§6Gorilla Tactics §f${whole}t"
+            }
+            else -> {
+                val seconds = displayTicks * 0.05
+                "§6Gorilla Tactics §f${"%.2f".format(seconds)}s"
+            }
         }
     }
 }

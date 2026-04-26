@@ -30,6 +30,10 @@ class FamilyConfig : Config() {
     var mining = MiningConfig()
 
     @Expose @JvmField
+    @Category(name = "Solo Kuudra", desc = "Solo Kuudra timers — Gorilla Tactics, Pearl Timer")
+    var soloKuudra = SoloKuudraConfig()
+
+    @Expose @JvmField
     @Category(name = "Kuudra", desc = "Kuudra features")
     var kuudra = KuudraConfig()
 

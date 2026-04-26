@@ -141,12 +141,12 @@ class HudEditorScreen : Screen(Text.literal("FA HUD Editor")) {
         val gtScale = GorillaTactics.getScale()
         val gtPlain = GorillaTactics.PREVIEW_TEXT.replace(COLOR_CODE_REGEX, "")
         val gtW = tr.getWidth(gtPlain)
-        val gtX = if (FamilyConfigManager.config.utilities.gorillaHudX == -1)
+        val gtX = if (FamilyConfigManager.config.soloKuudra.gorillaHudX == -1)
             ((sw - gtW * gtScale) / 2f).toInt()
-        else FamilyConfigManager.config.utilities.gorillaHudX
-        val gtY = if (FamilyConfigManager.config.utilities.gorillaHudY == -1)
+        else FamilyConfigManager.config.soloKuudra.gorillaHudX
+        val gtY = if (FamilyConfigManager.config.soloKuudra.gorillaHudY == -1)
             (sh / 2f + 40f).toInt()
-        else FamilyConfigManager.config.utilities.gorillaHudY
+        else FamilyConfigManager.config.soloKuudra.gorillaHudY
 
         elements.add(HudElement(
             id = "gorillaTactics", label = "Gorilla Tactics Timer",
@@ -155,12 +155,41 @@ class HudEditorScreen : Screen(Text.literal("FA HUD Editor")) {
             scale = gtScale,
             canScale = true,
             onSave = { elem ->
-                FamilyConfigManager.config.utilities.gorillaHudX = elem.x
-                FamilyConfigManager.config.utilities.gorillaHudY = elem.y
-                FamilyConfigManager.config.utilities.gorillaHudScale = "%.1f".format(elem.scale)
+                FamilyConfigManager.config.soloKuudra.gorillaHudX = elem.x
+                FamilyConfigManager.config.soloKuudra.gorillaHudY = elem.y
+                FamilyConfigManager.config.soloKuudra.gorillaHudScale = "%.1f".format(elem.scale)
             },
             renderContent = { ctx, _ ->
                 ctx.drawText(tr, Text.literal(GorillaTactics.PREVIEW_TEXT), 0, 0, 0xFFFFFFFF.toInt(), true)
+            }
+        ))
+
+// Pearl Timer
+        val ptScale = PearlTimer.getScale()
+        val ptPlain1 = PearlTimer.previewLine1().replace(COLOR_CODE_REGEX, "")
+        val ptPlain2 = PearlTimer.previewLine2().replace(COLOR_CODE_REGEX, "")
+        val ptW = maxOf(tr.getWidth(ptPlain1), tr.getWidth(ptPlain2))
+        val ptX = if (FamilyConfigManager.config.soloKuudra.pearlTimerHudX == -1)
+            ((sw - ptW * ptScale) / 2f).toInt()
+        else FamilyConfigManager.config.soloKuudra.pearlTimerHudX
+        val ptY = if (FamilyConfigManager.config.soloKuudra.pearlTimerHudY == -1)
+            (sh / 2f + 60f).toInt()
+        else FamilyConfigManager.config.soloKuudra.pearlTimerHudY
+
+        elements.add(HudElement(
+            id = "pearlTimer", label = "Pearl Timer",
+            x = ptX, y = ptY,
+            w = ptW + 4, h = 20,
+            scale = ptScale,
+            canScale = true,
+            onSave = { elem ->
+                FamilyConfigManager.config.soloKuudra.pearlTimerHudX = elem.x
+                FamilyConfigManager.config.soloKuudra.pearlTimerHudY = elem.y
+                FamilyConfigManager.config.soloKuudra.pearlTimerHudScale = "%.1f".format(elem.scale)
+            },
+            renderContent = { ctx, _ ->
+                ctx.drawText(tr, Text.literal(PearlTimer.previewLine1()), 0, 0, -1, true)
+                ctx.drawText(tr, Text.literal(PearlTimer.previewLine2()), 0, 10, -1, true)
             }
         ))
 
