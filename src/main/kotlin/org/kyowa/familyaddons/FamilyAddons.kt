@@ -49,6 +49,7 @@ object FamilyAddons : ClientModInitializer {
         ArachneTimer.register()
         GorillaTactics.register()
         PearlTimer.register()
+        PearlWaypoints.register()
 
 
 

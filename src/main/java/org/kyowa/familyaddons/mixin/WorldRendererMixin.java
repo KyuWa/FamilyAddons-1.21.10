@@ -10,6 +10,7 @@ import org.kyowa.familyaddons.features.CorpseESP;
 import org.kyowa.familyaddons.features.EntityHighlight;
 import org.kyowa.familyaddons.features.NpcLocations;
 import org.kyowa.familyaddons.features.Parkour;
+import org.kyowa.familyaddons.features.PearlWaypoints;
 import org.kyowa.familyaddons.features.Waypoints;
 import org.kyowa.familyaddons.features.WorldScanner;
 import org.spongepowered.asm.mixin.Mixin;
@@ -42,7 +43,8 @@ public class WorldRendererMixin {
                 !NpcLocations.INSTANCE.hasActiveWaypoints() &&
                 !Parkour.INSTANCE.hasRings() &&
                 !EntityHighlight.INSTANCE.hasHighlighted() &&
-                !WorldScanner.INSTANCE.hasWaypoints()) return;
+                !WorldScanner.INSTANCE.hasWaypoints() &&
+                !PearlWaypoints.INSTANCE.hasAimPoints()) return;
 
         fa_matrices.loadIdentity();
         fa_matrices.multiplyPositionMatrix(positionMatrix);
@@ -53,5 +55,6 @@ public class WorldRendererMixin {
         Parkour.INSTANCE.onWorldRender(fa_matrices, camera);
         EntityHighlight.INSTANCE.onWorldRender(fa_matrices, camera);
         WorldScanner.INSTANCE.onWorldRender(fa_matrices, camera);
+        PearlWaypoints.INSTANCE.onWorldRender(fa_matrices, camera);
     }
 }

@@ -4,9 +4,6 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.fabricmc.fabric.api.event.player.UseItemCallback
 import net.minecraft.client.MinecraftClient
-import net.minecraft.entity.Entity
-import net.minecraft.entity.LivingEntity
-import net.minecraft.entity.decoration.ArmorStandEntity
 import net.minecraft.entity.projectile.thrown.EnderPearlEntity
 import net.minecraft.item.EnderPearlItem
 import net.minecraft.item.ItemStack
@@ -15,7 +12,6 @@ import net.minecraft.util.ActionResult
 import net.minecraft.util.Hand
 import net.minecraft.util.hit.BlockHitResult
 import net.minecraft.util.hit.HitResult
-import net.minecraft.util.math.Box
 import net.minecraft.util.math.Vec3d
 import net.minecraft.world.RaycastContext
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
@@ -28,7 +24,7 @@ import kotlin.math.sin
 /**
  * Pearl land-time timer for Hypixel SkyBlock.
  *
- * Approach (prediction + entity tracking + per-tick collision raycast):
+ * Hybrid approach (prediction + entity tracking):
  *
  *  1. On right-click, simulate the pearl's flight using the same physics
  *     constants the vanilla server uses (matches Odin's Trajectories module):
@@ -40,73 +36,59 @@ import kotlin.math.sin
  *     instant they click.
  *
  *  2. Within ~10 ticks, find the spawned EnderPearlEntity owned by the local
- *     player (matching by UUID, not reference equality — the owner field can
- *     be null on the client for the first few ticks while the tracker data
- *     arrives) and bind it to our timer entry.
+ *     player and bind it to our timer entry. Once bound, we no longer rely on
+ *     prediction for the END condition — we end the timer the moment the
+ *     entity dies (i.e. the server marked it as collided, regardless of
+ *     whether it hit a block, a mob, or another player).
  *
- *  3. Each tick once bound, take the entity's previous position and current
- *     position and raycast that segment against blocks AND nearby entity
- *     bounding boxes. If we hit something, the pearl just landed THIS tick —
- *     end the timer immediately.
+ *  3. If we never bind an entity (chunk loading lag, very rare), fall back to
+ *     pure prediction — same behavior as before.
  *
- *     This is critical because:
- *       - Server-side entity removal arrives 1-3 ticks late on the client
- *         (network latency), so waiting for `!isAlive` ends late.
- *       - Long throws can take the pearl out of client-side entity tracking
- *         range. `getEntityById` then returns null and the OLD code treated
- *         that as collision — ending the timer 3-5 ticks early. We now
- *         distinguish unload from death by checking the last known position.
+ * This fixes both edge cases the old pure-prediction approach got wrong:
  *
- *  4. If the entity is unloaded mid-flight (long throws across chunks), we
- *     fall back to extending the timer with a fresh local simulation from the
- *     last known position/velocity rather than ending early.
+ *  - Mob walks under the pearl mid-flight   → entity dies early → timer ends
+ *  - Pearl flies further than predicted     → entity still alive → we wait
  *
  * Multiple pearls in flight are stacked in a list and displayed
  * "Pearl 1: 1.20s / Pearl 2: 0.85s" (or in ticks) in throw order.
  */
 object PearlTimer {
 
-    // Hard cap on how far we'll simulate. ~120 ticks = 6s, comfortably longer
-    // than any reasonable pearl arc.
+    // Hard cap on how far we'll simulate. ~120 ticks = 6s, which is comfortably
+    // longer than any reasonable pearl arc on Hypixel before it lands or despawns.
     private const val SIM_RANGE_TICKS = 120
 
-    // Minimum ticks between accepted throws — prevents 5 timers from a single
-    // right-click spam where only 1 pearl actually leaves the player.
+    // Minimum ticks between accepted throws. Right-clicking 5 times the same
+    // tick shouldn't queue 5 timers — only the first throw actually leaves
+    // the player.
     private const val THROW_DEBOUNCE_TICKS = 2
 
     // How long to wait for the EnderPearlEntity to appear in the world before
-    // falling back to pure prediction.
+    // giving up and falling back to pure prediction. The pearl typically
+    // spawns within 1-2 ticks of the throw; 10 is a generous safety margin.
     private const val BIND_TIMEOUT_TICKS = 10
 
-    // Hold "0.00s" briefly after landing for visual confirmation. 200 ms.
+    // After the entity dies (or is unbindable), keep showing "0.00s" briefly
+    // so the user gets a clear visual confirmation of the landing instead of
+    // the line just vanishing. 4 ticks = 200 ms.
     private const val POST_LAND_HOLD_TICKS = 4
-
-    // If a tracked entity vanishes from getEntityById, AND its last known
-    // position was within this distance of the player, it was almost certainly
-    // a real death (collision). Beyond this distance, the more likely cause
-    // is that it left client-side entity tracking range — we then continue
-    // with a local simulation instead of ending early.
-    private const val DEATH_VS_UNLOAD_THRESHOLD_BLOCKS = 64.0
 
     private enum class State { PENDING_BIND, TRACKING, PURE_PREDICTION, LANDED }
 
     private data class PearlEntry(
-        val id: Int,
-        var remainingTicks: Int,
-        var ticksSinceThrow: Int = 0,
+        val id: Int,                    // Display label (Pearl 1, 2, ...)
+        var remainingTicks: Int,        // Ticks left in the prediction
+        var ticksSinceThrow: Int = 0,   // Used for the bind timeout
         var state: State = State.PENDING_BIND,
-        var boundEntityId: Int = -1,
-        var lastPos: Vec3d? = null,
-        var lastVel: Vec3d? = null,
-        var lastSeenAge: Int = 0,
-        var postLandHold: Int = 0
+        var boundEntityId: Int = -1,    // World entity id of the bound pearl
+        var postLandHold: Int = 0       // Ticks to keep showing "0" after landing
     )
 
     @Volatile private var nextLabel = 1
     private val pearls = ArrayList<PearlEntry>()
     private var ticksSinceLastThrow = THROW_DEBOUNCE_TICKS
 
-    // HUD editor preview text variants.
+    // Preview text variants used by the HUD editor.
     const val PREVIEW_TEXT_SECONDS_1 = "§dPearl 1 §f1.20s"
     const val PREVIEW_TEXT_SECONDS_2 = "§dPearl 2 §f0.85s"
     const val PREVIEW_TEXT_TICKS_1 = "§dPearl 1 §f24t"
@@ -143,20 +125,17 @@ object PearlTimer {
         return true
     }
 
-    /**
-     * Predict total flight ticks from current player pose. Used both at throw
-     * time (initial estimate) and as a continuation when an entity unloads.
-     */
-    private fun predictLandingTicks(
-        startPos: Vec3d,
-        startMotion: Vec3d
-    ): Int? {
+    private fun predictLandingTicks(): Int? {
         val client = MinecraftClient.getInstance()
         val player = client.player ?: return null
         val world = client.world ?: return null
 
-        var pos = startPos
-        var motion = startMotion
+        val yawRad = Math.toRadians(player.yaw.toDouble())
+        val ox = -cos(yawRad) * 0.16
+        val oz = -sin(yawRad) * 0.16
+        var pos = Vec3d(player.x + ox, player.eyeY - 0.1, player.z + oz)
+
+        var motion = lookVector(player.yaw, player.pitch).normalize().multiply(1.5)
 
         for (tick in 1..SIM_RANGE_TICKS) {
             val nextPos = pos.add(motion)
@@ -181,18 +160,8 @@ object PearlTimer {
             pos = nextPos
             motion = Vec3d(motion.x * 0.99, (motion.y - 0.03) * 0.99, motion.z * 0.99)
         }
-        return null
-    }
 
-    /** Initial throw estimate — derives start pos/motion from current player pose. */
-    private fun predictInitialLandingTicks(): Int? {
-        val player = MinecraftClient.getInstance().player ?: return null
-        val yawRad = Math.toRadians(player.yaw.toDouble())
-        val ox = -cos(yawRad) * 0.16
-        val oz = -sin(yawRad) * 0.16
-        val startPos = Vec3d(player.x + ox, player.eyeY - 0.1, player.z + oz)
-        val startMotion = lookVector(player.yaw, player.pitch).normalize().multiply(1.5)
-        return predictLandingTicks(startPos, startMotion)
+        return null
     }
 
     private fun lookVector(yaw: Float, pitch: Float): Vec3d {
@@ -205,22 +174,21 @@ object PearlTimer {
     }
 
     /**
-     * Bind any unbound EnderPearlEntities owned by the local player to our
-     * PENDING_BIND entries.
-     *
-     * The owner check uses ownerUuid rather than `entity.owner !== player`
-     * because `entity.owner` does a UUID lookup that returns null until the
-     * server tracker pushes the owner UUID — which can take 1-2 ticks. Using
-     * the UUID directly lets us bind on the very tick the entity arrives.
+     * Look for unbound EnderPearlEntities owned by the local player and bind
+     * them to our PENDING_BIND entries in throw order. We bind the oldest
+     * pending entry to the youngest unbound pearl entity (by entity age) so
+     * that rapid back-to-back throws bind correctly.
      */
     private fun tryBindPearls() {
         val client = MinecraftClient.getInstance()
         val player = client.player ?: return
         val world = client.world ?: return
 
+        // Collect entries that still need binding.
         val pending = pearls.filter { it.state == State.PENDING_BIND }
         if (pending.isEmpty()) return
 
+        // Collect player-owned pearl entities not already bound to any entry.
         val alreadyBoundIds = pearls.mapNotNullTo(HashSet()) {
             if (it.boundEntityId != -1) it.boundEntityId else null
         }
@@ -228,82 +196,28 @@ object PearlTimer {
         for (entity in world.entities) {
             if (entity !is EnderPearlEntity) continue
             if (entity.id in alreadyBoundIds) continue
-            // Match by UUID against the entity's tracked owner UUID.
-            val ownerUuid = entity.ownerUuid
-            if (ownerUuid != null && ownerUuid != player.uuid) continue
-            // If ownerUuid is null but the entity is brand new and very close
-            // to us, it's almost certainly ours — accept it speculatively.
-            if (ownerUuid == null && (entity.age > 4 || entity.distanceTo(player) > 8.0)) continue
+            // Owner check — only bind pearls thrown by us. On Hypixel, owner
+            // metadata is sent for pearls so this is reliable.
+            if (entity.owner !== player) continue
             candidates.add(entity)
         }
         if (candidates.isEmpty()) return
 
-        // Newest entity (lowest age) is most likely the most recent throw.
+        // Sort candidates by age descending (newest = lowest age first), so the
+        // most recently spawned pearl binds to the most recently thrown entry.
         candidates.sortBy { it.age }
 
+        // Bind in order. There may be more pending than candidates or vice
+        // versa — that's fine, each is matched up to the available count.
         val toBind = minOf(pending.size, candidates.size)
-        // Oldest pending entry binds to oldest candidate (highest age) so
-        // throw-order labels stay consistent.
+        // Reverse-iterate pending so the OLDEST pending throw binds to the
+        // OLDEST candidate (highest age). This keeps Pearl 1 → first-thrown.
         for (i in 0 until toBind) {
-            val entry = pending[i]
-            val pearl = candidates[candidates.size - 1 - i]
+            val entry = pending[i]               // oldest-first
+            val pearl = candidates[candidates.size - 1 - i] // oldest-first
             entry.boundEntityId = pearl.id
             entry.state = State.TRACKING
-            entry.lastPos = pearl.pos
-            entry.lastVel = pearl.velocity
-            entry.lastSeenAge = pearl.age
         }
-    }
-
-    /**
-     * Per-tick collision check: did the pearl just hit anything between its
-     * last position and current position? Returns true on landing.
-     *
-     * This catches collisions on the same tick the server sees them, which
-     * fixes both:
-     *   - The "off by 3-5 ticks late" bug (waiting for entity removal packet)
-     *   - The "off by 3-5 ticks early on long throws" bug (entity unloads
-     *     out of view distance and we used to treat that as collision)
-     */
-    private fun didPearlLand(entity: EnderPearlEntity, prevPos: Vec3d): Boolean {
-        val world = MinecraftClient.getInstance().world ?: return false
-        val curPos = entity.pos
-        if (prevPos.squaredDistanceTo(curPos) < 1e-6) {
-            // Entity didn't move this tick. On a moving projectile, that means
-            // it's stuck in place — i.e. it landed and is about to be removed.
-            return true
-        }
-
-        // Block raycast.
-        val blockHit = world.raycast(
-            RaycastContext(
-                prevPos,
-                curPos,
-                RaycastContext.ShapeType.COLLIDER,
-                RaycastContext.FluidHandling.NONE,
-                entity
-            )
-        )
-        if (blockHit.type == HitResult.Type.BLOCK) return true
-
-        // Entity collision check — sweep the segment against nearby entity
-        // bounding boxes. Skip armor stands (Hypixel uses them as
-        // labels/decorations and they don't actually stop pearls) and
-        // projectiles (other pearls/arrows don't intercept).
-        val segBox = Box(prevPos, curPos).expand(1.0)
-        val player = MinecraftClient.getInstance().player
-        for (other in world.getOtherEntities(entity, segBox) { e ->
-            e !is ArmorStandEntity &&
-                    e !is EnderPearlEntity &&
-                    e !== player &&  // own player can't intercept own pearl on Hypixel
-                    e is LivingEntity &&
-                    e.isAlive
-        }) {
-            val box = other.boundingBox.expand(other.targetingMargin.toDouble())
-            val opt = box.raycast(prevPos, curPos)
-            if (opt.isPresent) return true
-        }
-        return false
     }
 
     fun register() {
@@ -315,11 +229,10 @@ object PearlTimer {
                 return@onTick
             }
 
+            // Try to bind any pending entries to spawned pearl entities.
             tryBindPearls()
 
-            val client = MinecraftClient.getInstance()
-            val world = client.world
-            val player = client.player
+            val world = MinecraftClient.getInstance().world
 
             val it = pearls.iterator()
             while (it.hasNext()) {
@@ -328,6 +241,10 @@ object PearlTimer {
 
                 when (entry.state) {
                     State.PENDING_BIND -> {
+                        // Still waiting for the entity. Decrement so the
+                        // visible timer keeps moving — if binding succeeds
+                        // we'll switch to entity-driven termination from
+                        // there. If we time out, fall back to pure prediction.
                         entry.remainingTicks--
                         if (entry.ticksSinceThrow >= BIND_TIMEOUT_TICKS) {
                             entry.state = State.PURE_PREDICTION
@@ -339,56 +256,21 @@ object PearlTimer {
                         }
                     }
                     State.TRACKING -> {
-                        val ent = world?.getEntityById(entry.boundEntityId) as? EnderPearlEntity
-                        val prevPos = entry.lastPos
-
-                        if (ent != null && ent.isAlive && prevPos != null) {
-                            // Per-tick collision raycast on the segment the
-                            // entity actually traversed this tick.
-                            if (didPearlLand(ent, prevPos)) {
-                                entry.remainingTicks = 0
-                                entry.state = State.LANDED
-                                entry.postLandHold = POST_LAND_HOLD_TICKS
-                            } else {
-                                entry.lastPos = ent.pos
-                                entry.lastVel = ent.velocity
-                                entry.lastSeenAge = ent.age
-                                entry.remainingTicks--
-                                if (entry.remainingTicks < 0) entry.remainingTicks = 0
-                            }
+                        // Authoritative end signal: the entity is gone or dead.
+                        // The server marks pearls dead the instant they collide
+                        // with anything (block, mob, player) — so this is exact.
+                        val ent = world?.getEntityById(entry.boundEntityId)
+                        if (ent == null || !ent.isAlive) {
+                            entry.remainingTicks = 0
+                            entry.state = State.LANDED
+                            entry.postLandHold = POST_LAND_HOLD_TICKS
                         } else {
-                            // Entity is gone. Was it killed (collision) or
-                            // just unloaded out of view distance?
-                            //
-                            // Heuristic: if the last seen position was close
-                            // to the player AND the entity is now NOT in the
-                            // world, it almost certainly hit something.
-                            // Otherwise it's an unload — fall back to
-                            // continuing the simulation from the last known
-                            // pos/vel.
-                            val playerPos = player?.pos
-                            val lastPos = entry.lastPos
-                            val lastVel = entry.lastVel
-                            val distToPlayer = if (playerPos != null && lastPos != null)
-                                playerPos.distanceTo(lastPos) else Double.POSITIVE_INFINITY
-
-                            if (distToPlayer < DEATH_VS_UNLOAD_THRESHOLD_BLOCKS) {
-                                // Almost certainly a real collision.
-                                entry.remainingTicks = 0
-                                entry.state = State.LANDED
-                                entry.postLandHold = POST_LAND_HOLD_TICKS
-                            } else if (lastPos != null && lastVel != null) {
-                                // Unload — switch to local simulation from the
-                                // last known state.
-                                val extrapolated = predictLandingTicks(lastPos, lastVel)
-                                if (extrapolated != null) {
-                                    entry.remainingTicks = extrapolated
-                                }
-                                entry.state = State.PURE_PREDICTION
-                            } else {
-                                // No last-known data — give up and decrement.
-                                entry.state = State.PURE_PREDICTION
-                            }
+                            entry.remainingTicks--
+                            // Don't auto-end on remainingTicks <= 0 here —
+                            // we trust the entity. If the prediction was a
+                            // tick or two short, we just clamp to 0 visually
+                            // and keep waiting.
+                            if (entry.remainingTicks < 0) entry.remainingTicks = 0
                         }
                     }
                     State.PURE_PREDICTION -> {
@@ -431,7 +313,7 @@ object PearlTimer {
 
             if (ticksSinceLastThrow < THROW_DEBOUNCE_TICKS) return@register ActionResult.PASS
 
-            val landTicks = predictInitialLandingTicks()
+            val landTicks = predictLandingTicks()
             if (landTicks == null) {
                 FamilyAddons.LOGGER.debug("PearlTimer: no impact predicted")
                 return@register ActionResult.PASS
@@ -454,9 +336,12 @@ object PearlTimer {
             val fractional = ServerTickTracker.fractionalTicksSinceLastTick()
             val unit = FamilyConfigManager.config.soloKuudra.pearlDisplayUnit
 
+            // Pre-build all lines so we can size the box & center properly.
             val lines = ArrayList<String>(pearls.size)
             var widestPlain = 0
             for (entry in pearls) {
+                // After landing, pin to 0 so the smoothing doesn't render a
+                // small negative value during the post-land hold.
                 val displayTicks = if (entry.state == State.LANDED) 0.0
                 else (entry.remainingTicks - fractional).coerceAtLeast(0.0)
                 val line = formatPearlLine(entry.id, displayTicks, unit)
@@ -480,9 +365,10 @@ object PearlTimer {
     }
 
     /**
+     * Renders one pearl's countdown.
      *  - Seconds: smooth fractional, e.g. "1.20s"
-     *  - Ticks:   integer using ceil so the visible value drops at the same
-     *             instant the underlying tick changes.
+     *  - Ticks:   integer using ceil so the displayed value drops at the same
+     *             instant as the underlying tick.
      */
     private fun formatPearlLine(id: Int, displayTicks: Double, unit: Int): String {
         return when (unit) {

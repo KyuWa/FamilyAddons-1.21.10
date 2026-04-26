@@ -21,7 +21,7 @@ class SoloKuudraConfig {
     @ConfigAccordionId(id = 50)
     @ConfigOption(name = "Display Unit", desc = "Seconds: 3.00s → 0.00s. Ticks: 60t → 0t (1 tick = 0.05s).")
     @ConfigEditorDropdown(values = ["Seconds", "Ticks"])
-    var gorillaDisplayUnit = 0  // 0 = seconds, 1 = ticks
+    var gorillaDisplayUnit = 0
 
     @Expose @JvmField var gorillaHudX = -1
     @Expose @JvmField var gorillaHudY = -1
@@ -43,14 +43,21 @@ class SoloKuudraConfig {
     @ConfigAccordionId(id = 51)
     @ConfigOption(name = "Display Unit", desc = "Seconds: 1.20s → 0.00s. Ticks: 24t → 0t (1 tick = 0.05s).")
     @ConfigEditorDropdown(values = ["Seconds", "Ticks"])
-    var pearlDisplayUnit = 0  // 0 = seconds, 1 = ticks
+    var pearlDisplayUnit = 0
 
     @Expose @JvmField var pearlTimerHudX = -1
     @Expose @JvmField var pearlTimerHudY = -1
     @Expose @JvmField var pearlTimerHudScale = "1.0"
 
-    // ── Migration flag ────────────────────────────────────────────────
-    // Set to true after the one-time copy of old utilities.* fields, so we
-    // don't keep overwriting the new fields if the user later changes them.
-    @Expose @JvmField var migratedFromUtilities = false
+    // ── Pearl Waypoints (Phase 1 supply piles) ────────────────────────
+    @Expose @JvmField
+    @ConfigOption(name = "Pearl Waypoints", desc = "")
+    @ConfigEditorAccordion(id = 52)
+    var pearlWaypointsAccordion = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 52)
+    @ConfigOption(name = "Enable", desc = "Render aim-point boxes for the six supply piles in Kuudra's Hollow phase 1. Aim your crosshair at the green box and throw an ender pearl — it lands on the pile. Boxes hide as piles are filled.")
+    @ConfigEditorBoolean
+    var pearlWaypoints = false
 }
