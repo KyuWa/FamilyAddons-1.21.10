@@ -13,7 +13,8 @@
     "EntityCaptureMixin",
     "PlayerDisguiseMixin",
     "HotbarScrollMixin",
-    "ServerTickPacketMixin"
+    "ServerTickPacketMixin",
+    "PearlInGameHudMixin"
   ],
   "injectors": {
     "defaultRequire": 1

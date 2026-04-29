@@ -5,7 +5,21 @@ import io.github.notenoughupdates.moulconfig.Config
 import io.github.notenoughupdates.moulconfig.annotations.Category
 import io.github.notenoughupdates.moulconfig.common.text.StructuredText
 
-class FamilyConfig : Config() {
+/**
+ * Public-tier FamilyConfig. Has all standard categories and a `hidden` field
+ * that's saved to JSON (via @Expose) but does NOT have @Category, so the
+ * MoulConfig GUI doesn't show a Hidden category for users of this class.
+ *
+ * For whitelisted users, [FamilyConfigPrivate] (which extends this) is
+ * instantiated instead. It adds a second field `hiddenForGui` with @Category
+ * that is synced to the same HiddenConfig instance as `hidden`, making the
+ * Hidden category appear in the GUI for whitelisted users only.
+ *
+ * Two-class design avoids the runtime annotation manipulation which is
+ * brittle across JDK versions (declaredAnnotations field is filtered in
+ * JDK 12+, exact filtering varies between JDK builds).
+ */
+open class FamilyConfig : Config() {
 
     override fun getTitle(): StructuredText = StructuredText.of("§6FamilyAddons")
 
@@ -30,12 +44,12 @@ class FamilyConfig : Config() {
     var mining = MiningConfig()
 
     @Expose @JvmField
-    @Category(name = "Solo Kuudra", desc = "Solo Kuudra timers — Gorilla Tactics, Pearl Timer")
-    var soloKuudra = SoloKuudraConfig()
-
-    @Expose @JvmField
     @Category(name = "Kuudra", desc = "Kuudra features")
     var kuudra = KuudraConfig()
+
+    @Expose @JvmField
+    @Category(name = "Solo Kuudra", desc = "Solo Kuudra features (Gorilla Tactics, Pearl Timer)")
+    var soloKuudra = SoloKuudraConfig()
 
     @Expose @JvmField
     @Category(name = "Dungeons", desc = "Dungeon features")
@@ -72,4 +86,17 @@ class FamilyConfig : Config() {
     @Expose @JvmField
     @Category(name = "Dev", desc = "Developer debug tools")
     var dev = DevConfig()
+
+    /**
+     * Hidden config — gson serializes this (so settings round-trip across
+     * launches and across whitelist status changes). MoulConfig sees no
+     * @Category annotation, so the GUI doesn't render a Hidden category for
+     * non-whitelisted users.
+     *
+     * Feature code accesses `cfg.hidden.crateWaypointsEnabled` etc., which
+     * compiles regardless of whether this is a FamilyConfig or
+     * FamilyConfigPrivate instance.
+     */
+    @Expose @JvmField
+    var hidden = HiddenConfig()
 }

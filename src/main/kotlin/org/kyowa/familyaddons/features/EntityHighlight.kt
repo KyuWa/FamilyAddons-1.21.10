@@ -29,6 +29,12 @@ object EntityHighlight {
         return false
     }
 
+    /**
+     * Returns the union of all configured highlight names. Used by `shouldScan()`'s
+     * downstream logic and any external callers. Match logic itself lives in
+     * `nameMatches()`, which uses different rules for manual-highlight names vs
+     * zone-bestiary names.
+     */
     private fun getNames(): List<String> {
         val names = mutableListOf<String>()
         if (FamilyConfigManager.config.highlight.enabled) {
@@ -49,12 +55,118 @@ object EntityHighlight {
         return names
     }
 
+    /**
+     * Match an entity against configured highlight names.
+     *
+     * Two pools with different rules:
+     *  - Manual names (HighlightConfig.mobNames + BestiaryConfig.mobName): loose
+     *    `.contains()` on either entity.name or customName. Preserves the old
+     *    behaviour where typing "dragon" matches anything dragon-related.
+     *  - Zone-bestiary names (BestiaryZoneHighlight.activeMobNames): match
+     *    against the customName ONLY, after stripping all decorations (level
+     *    brackets, stars, hearts, runic glyphs, etc.). The match accepts:
+     *      * exact equality, OR
+     *      * the stripped name with one allowed modifier word prefix
+     *        ("corrupted" or "runic"), since those variants share a bestiary
+     *        entry with their base mob (per Hypixel wiki).
+     *    This fixes Hypixel reusing one entity type across multiple bestiary
+     *    entries (Wither Skeleton ↔ Wither Spectre) while still highlighting
+     *    "Corrupted Wither Skeleton" / "Runic Wither Skeleton" correctly.
+     *    A pure substring match would falsely catch e.g. "Cave Spider" when
+     *    "Spider" is the active target — hence the explicit modifier list.
+     */
     private fun nameMatches(entity: Entity): Boolean {
-        val names = getNames()
-        if (names.isEmpty()) return false
+        val manualNames = mutableListOf<String>()
+        val zoneNames   = mutableListOf<String>()
+
+        if (FamilyConfigManager.config.highlight.enabled) {
+            FamilyConfigManager.config.highlight.mobNames
+                .split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotBlank() }
+                .forEach { if (it !in manualNames) manualNames.add(it) }
+        }
+        val bestiaryMob = FamilyConfigManager.config.bestiary.mobName.trim().lowercase()
+        if (bestiaryMob.isNotBlank() && bestiaryMob !in manualNames) manualNames.add(bestiaryMob)
+
+        if (FamilyConfigManager.config.bestiary.zoneHighlightEnabled) {
+            BestiaryZoneHighlight.activeMobNames.forEach { mob ->
+                val lower = mob.lowercase()
+                if (lower.isNotBlank() && lower !in zoneNames) zoneNames.add(lower)
+            }
+        }
+
+        if (manualNames.isEmpty() && zoneNames.isEmpty()) return false
+
         val name = entity.name.string.replace(COLOR_CODE_REGEX, "").lowercase()
-        val customName = entity.customName?.string?.replace(COLOR_CODE_REGEX, "")?.lowercase()
-        return names.any { n -> name.contains(n) || customName?.contains(n) == true }
+        val customNameRaw = entity.customName?.string?.replace(COLOR_CODE_REGEX, "")?.lowercase()
+
+        // Manual list: loose substring match on either field (legacy behaviour).
+        if (manualNames.isNotEmpty()) {
+            if (manualNames.any { n -> name.contains(n) || customNameRaw?.contains(n) == true }) {
+                return true
+            }
+        }
+
+        // Zone bestiary: stripped customName, exact equality OR allowed-modifier prefix.
+        if (zoneNames.isNotEmpty() && customNameRaw != null) {
+            val stripped = stripBestiaryNametag(customNameRaw)
+            if (stripped.isNotBlank() && zoneNames.any { matchesWithModifier(stripped, it) }) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Allowed modifier-word prefixes that share a bestiary entry with the base mob.
+     * Per Hypixel wiki, "corrupted" and "runic" are universal spawn variants — a
+     * Corrupted Wither Skeleton kill counts toward the Wither Skeleton bestiary.
+     * This is intentionally a small whitelist to avoid false positives like
+     * "Cave Spider" matching when "Spider" is the active target.
+     */
+    private val ALLOWED_MODIFIERS = setOf("corrupted", "runic")
+
+    private fun matchesWithModifier(stripped: String, target: String): Boolean {
+        if (stripped == target) return true
+        // "corrupted wither skeleton" matches target "wither skeleton" iff the
+        // text before the target is exactly one allowed modifier word.
+        if (stripped.endsWith(" $target")) {
+            val prefix = stripped.removeSuffix(" $target")
+            if (prefix in ALLOWED_MODIFIERS) return true
+        }
+        return false
+    }
+
+    /**
+     * Reduce a Hypixel mob nametag down to just its display name.
+     *
+     * Strategy: rather than enumerate every prefix/suffix Hypixel uses (level
+     * brackets, stars, hearts, runic glyphs, festival markers, mayor perks, etc.),
+     * we keep only "name tokens" — whitespace-separated chunks made entirely of
+     * letters, apostrophes, or hyphens. Anything containing a digit, bracket,
+     * heart, star, or unknown symbol is decoration and gets discarded.
+     *
+     * Future-proof: when Hypixel adds a new symbol, it gets auto-stripped instead
+     * of silently breaking matches.
+     *
+     * Examples (input → output):
+     *   "✯ wither spectre 500❤"           → "wither spectre"
+     *   "[lv50] zombie 1,234/5,000❤"      → "zombie"
+     *   "wither skeleton 50❤"              → "wither skeleton"
+     *   "᠅ runic ghoul ⓢ 2.5m❤"            → "runic ghoul"
+     *   "[lv1] flaming spider 100❤"       → "flaming spider"
+     *   "✯ bal 7m❤"                        → "bal"
+     *
+     * NOTE: input is already lowercased and color-code-stripped by the caller.
+     */
+    private fun stripBestiaryNametag(s: String): String {
+        val nameTokenRegex = Regex("""^[a-z'\-]+$""")
+        return s.split(Regex("""\s+"""))
+            .filter { it.isNotEmpty() && nameTokenRegex.matches(it) }
+            .joinToString(" ")
+            .trim()
     }
 
     /**
@@ -116,8 +228,7 @@ object EntityHighlight {
     fun rescan() {
         highlighted.clear()
         val world = MinecraftClient.getInstance().world ?: return
-        val names = getNames()
-        if (names.isEmpty()) return
+        if (!shouldScan()) return
         world.entities.forEach { entity ->
             if (!entity.isAlive) return@forEach
             // Skip any real connected player up-front. This prevents matches like the search

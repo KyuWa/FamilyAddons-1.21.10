@@ -48,16 +48,4 @@ class SoloKuudraConfig {
     @Expose @JvmField var pearlTimerHudX = -1
     @Expose @JvmField var pearlTimerHudY = -1
     @Expose @JvmField var pearlTimerHudScale = "1.0"
-
-    // ── Pearl Waypoints (Phase 1 supply piles) ────────────────────────
-    @Expose @JvmField
-    @ConfigOption(name = "Pearl Waypoints", desc = "")
-    @ConfigEditorAccordion(id = 52)
-    var pearlWaypointsAccordion = false
-
-    @Expose @JvmField
-    @ConfigAccordionId(id = 52)
-    @ConfigOption(name = "Enable", desc = "Render aim-point boxes for the six supply piles in Kuudra's Hollow phase 1. Aim your crosshair at the green box and throw an ender pearl — it lands on the pile. Boxes hide as piles are filled.")
-    @ConfigEditorBoolean
-    var pearlWaypoints = false
 }

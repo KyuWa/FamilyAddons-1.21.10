@@ -1,504 +1,680 @@
 package org.kyowa.familyaddons.features
 
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.render.Camera
+import net.minecraft.client.render.LightmapTextureManager
 import net.minecraft.client.render.RenderLayer
+import net.minecraft.client.render.VertexConsumerProvider
 import net.minecraft.client.render.VertexRendering
 import net.minecraft.client.util.math.MatrixStack
 import net.minecraft.entity.decoration.ArmorStandEntity
-import net.minecraft.item.EnderPearlItem
-import net.minecraft.util.hit.BlockHitResult
-import net.minecraft.util.hit.HitResult
+import net.minecraft.sound.SoundEvents
 import net.minecraft.util.math.Box
 import net.minecraft.util.math.Vec3d
-import net.minecraft.world.RaycastContext
 import org.kyowa.familyaddons.COLOR_CODE_REGEX
 import org.kyowa.familyaddons.config.FamilyConfigManager
+import org.kyowa.familyaddons.features.pearl.DoublePearls
+import org.kyowa.familyaddons.features.pearl.MissingSupplies
+import org.kyowa.familyaddons.features.pearl.PearlCalculator
+import org.kyowa.familyaddons.features.pearl.Place
+import org.kyowa.familyaddons.features.pearl.Pre
+import org.kyowa.familyaddons.features.pearl.Prio
 import org.lwjgl.opengl.GL11
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.sqrt
-import kotlin.math.tan
 
 /**
- * Pearl aim waypoints for Solo Kuudra phase 1 (supply pickup).
+ * PawsUp-style dynamic Pearl Waypoints — Phase E.
  *
- * For each of the six supply piles, we solve the inverse trajectory problem:
- * given the player's current position and a fixed pile XZ, find the pitch
- * that — combined with the player's current yaw direction toward the pile —
- * lands a pearl on that pile.
- *
- * Why this works without calibration constants (unlike the original CT
- * version): we use the same per-tick forward simulation that PearlTimer uses,
- * which is the actual physics the server runs. The closed-form ballistic
- * equation IS approximate (ignores 0.99 drag), so any code using it has to
- * compensate empirically. The simulator is exact, so we just sweep pitches
- * until we find the one that lands on target.
- *
- * Once solved, we render a small box at the aim point in world space — the
- * direction from player eyes through that box matches the solved (yaw, pitch).
- * Player aims crosshair at box → throws pearl → pearl lands on pile.
- *
- * Pile occupancy: piles already filled have a "SUPPLIES RECEIVED" armor stand
- * floating above them. We scan for those each tick window and hide the
- * waypoint for any occupied pile.
+ * Adds on top of Phase B/C/D:
+ *  - "NOW sound" — play a single ping the first frame the throw window opens.
+ *    Re-armed at each grab start.
+ *  - Occupancy fallback — if the destination pile for the player's current
+ *    Pre is already occupied, render waypoints to ALL OTHER unoccupied piles
+ *    so the player can deposit somewhere else.
+ *  - Expanded debug — /fapearl info now lists which double-pearl routes are
+ *    in range and why they might be hidden (occupancy, missing supplies).
  */
 object PearlWaypoints {
 
-    // ── Constants ─────────────────────────────────────────────────────
+    // ── Chat parsing ───────────────────────────────────────────────────
 
-    /** The six supply piles — fixed XZ coordinates in Kuudra's Hollow. */
-    data class Pile(val pre: Int, val name: String, val x: Double, val z: Double)
-
-    private val PILES = listOf(
-        Pile(1, "x",      -106.0, -113.0),
-        Pile(2, "xc",     -110.0, -106.0),
-        Pile(4, "equals",  -98.0,  -99.0),
-        Pile(5, "slash",  -106.0,  -99.0),
-        Pile(6, "tri",     -94.0, -106.0),
-        Pile(7, "shop",    -98.0, -113.0),
+    private val MISSING_REGEX = Regex(
+        """^Party > (?:\[[^]]*?])? ?(\w{1,16}): No ?(Triangle|X|Equals|Slash|X Cannon|xCannon|Square|Shop)!$""",
+        RegexOption.IGNORE_CASE
     )
 
-    // Pearl physics — must match server-side and PearlTimer's predictor.
-    private const val PEARL_SPEED = 1.5
-    private const val DRAG = 0.99
-    private const val GRAVITY = 0.03
+    private val PROGRESS_REGEX = Regex("""\[.*?]\s*(\d+)%""")
 
-    // Solver search range. Pitches outside this range either send the pearl
-    // straight up or straight down — neither lands on a horizontal pile.
-    private const val PITCH_MIN_DEG = -60.0
-    private const val PITCH_MAX_DEG = 30.0
-    private const val PITCH_COARSE_STEP_DEG = 1.0
-    private const val PITCH_REFINE_ITERS = 6
-
-    // Hard cap on simulation length per pitch candidate. 100 ticks = 5 s.
-    private const val SIM_MAX_TICKS = 100
-
-    // How far the simulated landing can be from the pile XZ to count as a hit.
-    private const val LANDING_TOLERANCE_BLOCKS = 1.5
-
-    // Resolve cadence — recomputing every frame is wasteful.
-    private const val RESOLVE_INTERVAL_TICKS = 5
-
-    // Occupancy scan cadence and threshold.
-    private const val OCCUPANCY_INTERVAL_TICKS = 10
-    private const val OCCUPANCY_DIST_SQ = 6.0 * 6.0
-
-    // Aim point box render size (full edge length).
-    private const val BOX_SIZE = 0.6
-
-    // ── State ─────────────────────────────────────────────────────────
-
-    /** A solved aim point for one pile. */
-    data class AimPoint(
-        val pile: Pile,
-        val aimX: Double,
-        val aimY: Double,
-        val aimZ: Double,
-        val reachable: Boolean
+    private val GRAB_LOSS_LINES = listOf(
+        "You moved and the Chest slipped out of your hands!",
+        "You retrieved some of Elle's supplies from the Lava!",
     )
 
-    @Volatile private var activeAimPoints: List<AimPoint> = emptyList()
+    // ── State ──────────────────────────────────────────────────────────
 
-    private val pileOccupied = HashMap<Int, Boolean>().apply {
-        for (p in PILES) put(p.pre, false)
-    }
+    @Volatile private var grabbing: Boolean = false
+    @Volatile private var grabStartTick: Int = -1
+    @Volatile private var tickCount: Int = 0
 
-    private var ticksSinceResolve = RESOLVE_INTERVAL_TICKS
-    private var ticksSinceOccupancy = OCCUPANCY_INTERVAL_TICKS
+    /** Set true after the NOW sound has fired for the current grab. Reset on grab start. */
+    @Volatile private var nowSoundPlayed: Boolean = false
 
-    fun hasAimPoints(): Boolean = activeAimPoints.isNotEmpty()
+    /** Set of piles currently displaying a "SUPPLIES RECEIVED" armor stand. */
+    private val occupiedPlaces: MutableSet<Place> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private var occupancyScanTicker = 0
 
-    // ── Public render hook (called from WorldRendererMixin) ───────────
+    // ── PawsUp's pickTimings table ─────────────────────────────────────
+    // [talisman 0..3 = NoTali..T3][kuudraTier-1 0..4 = T1..T5] → ticks
+    private val pickTimings: Array<IntArray> = arrayOf(
+        intArrayOf(60, 80, 100, 120, 120),  // No Tali
+        intArrayOf(55, 75,  90, 110, 110),  // T1
+        intArrayOf(50, 65,  80, 100, 100),  // T2
+        intArrayOf(45, 60,  70,  85,  85),  // T3
+    )
 
-    fun onWorldRender(matrices: MatrixStack, camera: Camera) {
-        val points = activeAimPoints
-        if (points.isEmpty()) return
+    // ── Public API ─────────────────────────────────────────────────────
 
-        val client = MinecraftClient.getInstance()
-        val cam = camera.pos
-        val immediate = client.bufferBuilders?.entityVertexConsumers ?: return
-
-        matrices.push()
-        matrices.translate(-cam.x, -cam.y, -cam.z)
-
-        // Pass 1: depth-tested wireframe (visible color when in line of sight).
-        for (ap in points) {
-            val half = BOX_SIZE / 2.0
-            val box = Box(
-                ap.aimX - half, ap.aimY - half, ap.aimZ - half,
-                ap.aimX + half, ap.aimY + half, ap.aimZ + half
-            )
-            val (r, g, b) = if (ap.reachable) Triple(0.2f, 1.0f, 0.4f)
-            else Triple(1.0f, 0.3f, 0.3f)
-            VertexRendering.drawBox(
-                matrices.peek(),
-                immediate.getBuffer(RenderLayer.getLines()),
-                box, r, g, b, 1.0f
-            )
-        }
-        immediate.draw(RenderLayer.getLines())
-
-        // Pass 2: through-walls translucent (so it stays visible if the player
-        // turns away or steps behind a pillar).
-        GL11.glDisable(GL11.GL_DEPTH_TEST)
-        val immediate2 = client.bufferBuilders?.entityVertexConsumers
-        if (immediate2 != null) {
-            for (ap in points) {
-                val half = BOX_SIZE / 2.0
-                val box = Box(
-                    ap.aimX - half, ap.aimY - half, ap.aimZ - half,
-                    ap.aimX + half, ap.aimY + half, ap.aimZ + half
-                )
-                val (r, g, b) = if (ap.reachable) Triple(0.2f, 1.0f, 0.4f)
-                else Triple(1.0f, 0.3f, 0.3f)
-                VertexRendering.drawBox(
-                    matrices.peek(),
-                    immediate2.getBuffer(RenderLayer.getLines()),
-                    box, r, g, b, 0.35f
-                )
-            }
-            immediate2.draw(RenderLayer.getLines())
-        }
-        GL11.glEnable(GL11.GL_DEPTH_TEST)
-
-        matrices.pop()
-    }
-
-    // ── Lifecycle ─────────────────────────────────────────────────────
-
-    fun register() {
-        // Driven by the server-tick signal — same approach as PearlTimer and
-        // GorillaTactics. Keeps cadence synced to actual game time and
-        // automatically pauses during server lag.
-        ServerTickTracker.onTick {
-            ticksSinceResolve++
-            ticksSinceOccupancy++
-
-            if (!shouldRender()) {
-                if (activeAimPoints.isNotEmpty()) activeAimPoints = emptyList()
-                return@onTick
-            }
-
-            if (ticksSinceOccupancy >= OCCUPANCY_INTERVAL_TICKS) {
-                ticksSinceOccupancy = 0
-                updatePileOccupancy()
-            }
-
-            if (ticksSinceResolve >= RESOLVE_INTERVAL_TICKS) {
-                ticksSinceResolve = 0
-                resolveAll()
-            }
-        }
-
-        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
-            activeAimPoints = emptyList()
-            for (p in PILES) pileOccupied[p.pre] = false
-        }
-        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            activeAimPoints = emptyList()
-        }
-    }
-
-    // ── Gating ────────────────────────────────────────────────────────
-
-    /**
-     * Render only when:
-     *  - the feature is enabled,
-     *  - the player is in Kuudra's Hollow, and
-     *  - the player is holding an ender pearl.
-     *
-     * The held-pearl gate is a cheap stand-in for "phase 1": you only carry
-     * pearls during the supply-pickup phase. Saves the trouble of phase
-     * detection while giving the right behavior in practice.
-     */
-    private fun shouldRender(): Boolean {
-        if (!FamilyConfigManager.config.soloKuudra.pearlWaypoints) return false
-        val client = MinecraftClient.getInstance()
-        val player = client.player ?: return false
-
-        // Held-pearl check (main hand or off hand).
-        val main = player.mainHandStack
-        val off = player.offHandStack
-        val holdingPearl = (main.item is EnderPearlItem) || (off.item is EnderPearlItem)
-        if (!holdingPearl) return false
-
-        // Subarea check — looks for "Area: Kuudra" in the tab list.
-        if (!isInKuudra()) return false
-
+    fun hasWaypoints(): Boolean {
+        if (!org.kyowa.familyaddons.Whitelist.isAllowed()) return false
+        if (!FamilyConfigManager.config.hidden.pearlWaypointsEnabled) return false
+        if (!AutoRequeue.isInKuudra()) return false
+        if (!KuudraPhase.isInP1()) return false
         return true
     }
 
-    private fun isInKuudra(): Boolean {
-        return try {
-            val tabList = MinecraftClient.getInstance().networkHandler?.playerList ?: return false
-            for (entry in tabList) {
-                val name = entry.displayName?.string?.replace(COLOR_CODE_REGEX, "")?.trim() ?: continue
-                if (name.startsWith("Area:") && name.contains("Kuudra", ignoreCase = true)) {
-                    return true
-                }
+    fun onTitle(rawTitle: String) {
+        val plain = rawTitle.replace(COLOR_CODE_REGEX, "")
+        val match = PROGRESS_REGEX.find(plain) ?: return
+        val pct = match.groupValues[1].toIntOrNull() ?: return
+        when {
+            pct == 0 -> {
+                grabbing = true
+                grabStartTick = tickCount
+                nowSoundPlayed = false
             }
-            false
-        } catch (e: Exception) { false }
+            grabbing && pct >= 100 -> clearGrab()
+        }
     }
 
-    // ── Pile occupancy ────────────────────────────────────────────────
+    private fun clearGrab() {
+        grabbing = false
+        grabStartTick = -1
+        tickCount = 0
+        nowSoundPlayed = false
+    }
 
-    private fun updatePileOccupancy() {
-        for (p in PILES) pileOccupied[p.pre] = false
+    fun register() {
+        // Whitelist gate — non-whitelisted users don't register any handlers,
+        // so this feature is fully inert (not just config-hidden).
+        if (!org.kyowa.familyaddons.Whitelist.isAllowed()) {
+            return
+        }
 
-        val world = MinecraftClient.getInstance().world ?: return
+        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
+            MissingSupplies.clear()
+            occupiedPlaces.clear()
+            clearGrab()
+        }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
+            MissingSupplies.clear()
+            occupiedPlaces.clear()
+            clearGrab()
+        }
 
+        ClientReceiveMessageEvents.ALLOW_GAME.register { message, _ ->
+            handleChat(message.string.replace(COLOR_CODE_REGEX, "").trim())
+            true
+        }
+
+        ClientTickEvents.END_CLIENT_TICK.register { client ->
+            Prio.useNewPrio = FamilyConfigManager.config.hidden.pearlNewPrio
+
+            if (!KuudraPhase.isInP1()) {
+                if (grabbing) clearGrab()
+                if (occupiedPlaces.isNotEmpty()) occupiedPlaces.clear()
+                if (MissingSupplies.missing.isNotEmpty()) MissingSupplies.clear()
+            }
+
+            if (grabbing) tickCount++
+
+            // Check NOW sound trigger every tick during a grab.
+            if (grabbing && !nowSoundPlayed) {
+                if (shouldFireNowSound()) {
+                    playNowSound()
+                    nowSoundPlayed = true
+                }
+            }
+
+            occupancyScanTicker++
+            if (occupancyScanTicker >= 10) {
+                occupancyScanTicker = 0
+                scanOccupancy(client)
+            }
+        }
+    }
+
+    private fun handleChat(plain: String) {
+        when {
+            plain in GRAB_LOSS_LINES -> clearGrab()
+            else -> {
+                val m = MISSING_REGEX.find(plain) ?: return
+                val name = m.groupValues[2]
+                val place = parsePlaceName(name) ?: return
+                MissingSupplies.missing.add(place)
+            }
+        }
+    }
+
+    private fun parsePlaceName(s: String): Place? = when (s.lowercase()) {
+        "shop"     -> Place.SHOP
+        "x"        -> Place.X
+        "x cannon", "xcannon" -> Place.X_CANNON
+        "equals"   -> Place.EQUALS
+        "slash"    -> Place.SLASH
+        "triangle" -> Place.TRIANGLE
+        else -> null
+    }
+
+    private fun scanOccupancy(client: MinecraftClient) {
+        val world = client.world ?: run { occupiedPlaces.clear(); return }
+        if (!hasWaypoints()) {
+            occupiedPlaces.clear()
+            return
+        }
+        val newOccupied = mutableSetOf<Place>()
         for (entity in world.entities) {
             if (entity !is ArmorStandEntity) continue
-            // Custom name check first (cheaper) — fall back to display name.
-            val nameComponent = entity.customName ?: continue
-            val plain = nameComponent.string.replace(COLOR_CODE_REGEX, "")
-            if (!plain.contains("SUPPLIES RECEIVED")) continue
-
-            val ex = entity.x
-            val ez = entity.z
-            var bestPre = -1
-            var bestDistSq = Double.POSITIVE_INFINITY
-            for (p in PILES) {
-                val dx = ex - p.x
-                val dz = ez - p.z
-                val d2 = dx * dx + dz * dz
-                if (d2 < bestDistSq) {
-                    bestDistSq = d2
-                    bestPre = p.pre
+            val nameText = entity.customName ?: entity.name
+            val nameStr = nameText.string.replace(COLOR_CODE_REGEX, "").trim()
+            if (!nameStr.contains("SUPPLIES RECEIVED", ignoreCase = true)) continue
+            val ex = entity.x; val ez = entity.z
+            var nearest: Place? = null
+            var bestDistSq = 6.0 * 6.0
+            for (place in Place.values()) {
+                val dx = place.location.x - ex
+                val dz = place.location.z - ez
+                val d = dx * dx + dz * dz
+                if (d <= bestDistSq) {
+                    bestDistSq = d
+                    nearest = place
                 }
             }
-            if (bestPre != -1 && bestDistSq <= OCCUPANCY_DIST_SQ) {
-                pileOccupied[bestPre] = true
-            }
+            if (nearest != null) newOccupied.add(nearest)
         }
+        occupiedPlaces.clear()
+        occupiedPlaces.addAll(newOccupied)
     }
 
-    // ── Trajectory solver ─────────────────────────────────────────────
-
-    private fun resolveAll() {
-        val client = MinecraftClient.getInstance()
-        val player = client.player ?: run { activeAimPoints = emptyList(); return }
-        val world = client.world ?: run { activeAimPoints = emptyList(); return }
-
-        val px = player.x
-        val py = player.eyeY
-        val pz = player.z
-
-        val results = ArrayList<AimPoint>(PILES.size)
-        for (pile in PILES) {
-            if (pileOccupied[pile.pre] == true) continue
-
-            // Resolve target Y: the ground at the pile XZ. Raycast from far
-            // above straight down. If we miss (open air column), fall back to
-            // a sensible default of y=91, which is the supply pad floor in
-            // the standard Kuudra arena.
-            val targetY = findGroundY(pile.x, pile.z) ?: 91.0
-
-            // The yaw from the player toward the pile XZ — solver uses this
-            // direction; pitch is what we sweep.
-            val dx = pile.x - px
-            val dz = pile.z - pz
-            val horizDist = sqrt(dx * dx + dz * dz)
-            if (horizDist < 0.5) continue  // Standing on top of pile already.
-
-            val solved = solvePitch(player.yaw, px, py, pz, pile, targetY)
-            if (solved == null) {
-                // No pitch in our range produces a landing within tolerance.
-                // Compute an aim point anyway so the user sees *something*,
-                // but mark unreachable.
-                val fallbackY = py + 0.5
-                results.add(AimPoint(pile, pile.x, fallbackY, pile.z, reachable = false))
-                continue
-            }
-
-            // Compose the in-world aim point. We use the actual horizontal
-            // direction from player to pile (XZ), not the player's current
-            // yaw — because the visible aim box represents WHERE TO LOOK,
-            // and "where to look" is along the pile direction.
-            val pitchRad = Math.toRadians(solved)
-            val aimY = py + tan(-pitchRad) * horizDist
-            // Note: pitch is inverted in MC convention (negative = looking up).
-            // We want aim point to be ABOVE eye level when pearl is thrown up,
-            // so we flip the sign of the pitch in the height term.
-            //
-            // Sanity check: solver returns pitch in MC convention where
-            // negative = up. tan(-pitch) is positive when pitch is negative,
-            // so aim point is above eye — correct.
-
-            results.add(AimPoint(pile, pile.x, aimY, pile.z, reachable = true))
-        }
-
-        activeAimPoints = results
-    }
-
-    /**
-     * Find the highest solid block at (x, z) by raycasting straight down from
-     * y=200. Returns the y-coordinate of the top surface, or null if nothing
-     * is hit.
-     */
-    private fun findGroundY(x: Double, z: Double): Double? {
-        val world = MinecraftClient.getInstance().world ?: return null
-        val player = MinecraftClient.getInstance().player ?: return null
-        val from = Vec3d(x, 200.0, z)
-        val to = Vec3d(x, -64.0, z)
-        val hit = world.raycast(
-            RaycastContext(
-                from, to,
-                RaycastContext.ShapeType.COLLIDER,
-                RaycastContext.FluidHandling.NONE,
-                player
-            )
-        )
-        if (hit.type != HitResult.Type.BLOCK) return null
-        return hit.pos.y
-    }
-
-    /**
-     * Sweep pitch from PITCH_MIN_DEG to PITCH_MAX_DEG, simulating each, and
-     * return the pitch (in MC convention, negative = up) whose simulated
-     * landing is closest to the pile XZ. Returns null if no candidate lands
-     * within LANDING_TOLERANCE_BLOCKS.
-     *
-     * Two-stage: coarse 1° sweep, then ±0.5° binary refinement around the
-     * best coarse candidate.
-     */
-    private fun solvePitch(
-        yawDeg: Float,
-        px: Double, py: Double, pz: Double,
-        pile: Pile,
-        targetY: Double
-    ): Double? {
-        val yawRad = Math.toRadians(yawDeg.toDouble())
-
-        // Pearl spawn offset (matches vanilla ProjectileEntity offset and
-        // PearlTimer's predictor).
-        val ox = -cos(yawRad) * 0.16
-        val oz = -sin(yawRad) * 0.16
-        val startX = px + ox
-        val startY = py - 0.1
-        val startZ = pz + oz
-
-        // For the YAW component of the launch direction, we want to point
-        // straight at the pile in XZ — that's what the solver assumes. Pitch
-        // is what we vary.
-        //
-        // We do NOT use the player's actual yaw here, because they might be
-        // looking elsewhere. The solver's job is to find aim coords; the
-        // visual box at those coords *implicitly* tells the player which yaw
-        // to use.
-        val dx = pile.x - startX
-        val dz = pile.z - startZ
-        val horizDist = sqrt(dx * dx + dz * dz)
-        if (horizDist < 1e-3) return null
-        val dirX = dx / horizDist
-        val dirZ = dz / horizDist
-
-        // Coarse sweep.
-        var bestPitch = Double.NaN
-        var bestDistSq = Double.POSITIVE_INFINITY
-        var bestWithinTolerance = false
-
-        var pitchDeg = PITCH_MIN_DEG
-        while (pitchDeg <= PITCH_MAX_DEG + 1e-6) {
-            val landDistSq = simulateLandingDistSq(
-                startX, startY, startZ,
-                dirX, dirZ, pitchDeg,
-                pile, targetY
-            )
-            if (landDistSq != null && landDistSq < bestDistSq) {
-                bestDistSq = landDistSq
-                bestPitch = pitchDeg
-            }
-            pitchDeg += PITCH_COARSE_STEP_DEG
-        }
-
-        if (bestPitch.isNaN()) return null
-
-        // Refine: shrinking ±range around bestPitch.
-        var refineRange = PITCH_COARSE_STEP_DEG
-        repeat(PITCH_REFINE_ITERS) {
-            val candidates = doubleArrayOf(bestPitch - refineRange, bestPitch + refineRange)
-            for (c in candidates) {
-                val d2 = simulateLandingDistSq(
-                    startX, startY, startZ,
-                    dirX, dirZ, c,
-                    pile, targetY
-                ) ?: continue
-                if (d2 < bestDistSq) {
-                    bestDistSq = d2
-                    bestPitch = c
-                }
-            }
-            refineRange *= 0.5
-        }
-
-        bestWithinTolerance = bestDistSq <= LANDING_TOLERANCE_BLOCKS * LANDING_TOLERANCE_BLOCKS
-        return if (bestWithinTolerance) bestPitch else null
-    }
-
-    /**
-     * Simulate one trajectory and return squared XZ distance from landing
-     * point to pile. Returns null if the pearl doesn't terminate within
-     * SIM_MAX_TICKS (e.g. flew off into open air).
-     *
-     * The simulation uses the same per-tick math as PearlTimer's predictor
-     * and the actual server.
-     */
-    private fun simulateLandingDistSq(
-        startX: Double, startY: Double, startZ: Double,
-        dirX: Double, dirZ: Double, pitchDeg: Double,
-        pile: Pile, targetY: Double
-    ): Double? {
-        val world = MinecraftClient.getInstance().world ?: return null
-        val player = MinecraftClient.getInstance().player ?: return null
-
-        // Convert pitch to a vertical component. MC convention: negative
-        // pitch = looking up. So pearl with pitch=-30° has positive Y motion.
-        // The horizontal component scales with cos(pitch).
-        val pitchRad = Math.toRadians(pitchDeg)
-        val cosP = cos(pitchRad)
-        val sinP = sin(pitchRad)
-
-        // Direction vector: (dirX*cosP, -sinP, dirZ*cosP). Length is 1 by
-        // construction (since dirX² + dirZ² = 1 and cos² + sin² = 1).
-        var mx = dirX * cosP * PEARL_SPEED
-        var my = -sinP * PEARL_SPEED
-        var mz = dirZ * cosP * PEARL_SPEED
-
-        var x = startX
-        var y = startY
-        var z = startZ
-
-        for (tick in 1..SIM_MAX_TICKS) {
-            val nx = x + mx
-            val ny = y + my
-            val nz = z + mz
-
-            val hit = world.raycast(
-                RaycastContext(
-                    Vec3d(x, y, z),
-                    Vec3d(nx, ny, nz),
-                    RaycastContext.ShapeType.COLLIDER,
-                    RaycastContext.FluidHandling.NONE,
-                    player
-                )
-            )
-            if (hit.type == HitResult.Type.BLOCK && hit is BlockHitResult) {
-                val landX = hit.pos.x
-                val landZ = hit.pos.z
-                val ddx = landX - pile.x
-                val ddz = landZ - pile.z
-                return ddx * ddx + ddz * ddz
-            }
-
-            x = nx; y = ny; z = nz
-            mx *= DRAG
-            my = (my - GRAVITY) * DRAG
-            mz *= DRAG
+    private fun preToPlace(pre: Pre): Place? {
+        val target = Prio.getSupplyForSpot(pre) ?: return null
+        for (place in Place.values()) {
+            if (place.location == target) return place
         }
         return null
+    }
+
+    private fun getMaxTimeMs(): Long {
+        val kuudra = AutoRequeue.kuudraTierIndex()
+        if (kuudra == 0) return 6000L
+        val tierIdx = (kuudra - 1).coerceIn(0, 4)
+        val taliIdx = FamilyConfigManager.config.hidden.pearlTalismanTier.coerceIn(0, 3)
+        return pickTimings[taliIdx][tierIdx] * 50L
+    }
+
+    /**
+     * True if the throw window for the player's current Pre is open (or past).
+     * Uses the MAIN waypoint (not double-pearl) for the trigger.
+     */
+    private fun shouldFireNowSound(): Boolean {
+        if (!grabbing || grabStartTick < 0) return false
+        val cfg = FamilyConfigManager.config.hidden
+        if (!cfg.pearlNowSound) return false
+
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player ?: return false
+        val eye = player.getCameraPosVec(1f)
+        val pre = Pre.getClosestSpot(eye)
+        if (pre == Pre.NONE) return false
+
+        val supplyDest = Prio.getSupplyForSpot(pre) ?: return false
+        val sol = PearlCalculator.solvePearl(false, eye, eye, supplyDest) ?: return false
+
+        val ticksSinceGrab = (tickCount - grabStartTick).coerceAtLeast(0)
+        val flightTicks = (sol.flightTimeMs / 50L).toInt()
+        val maxTicks = (getMaxTimeMs() / 50L).toInt()
+        val delayTicks = (cfg.pearlTimerDelay.toLong() / 50L).toInt()
+        val remaining = maxTicks - ticksSinceGrab - flightTicks + delayTicks
+        return remaining <= 0
+    }
+
+    private fun playNowSound() {
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player ?: return
+        val volume = FamilyConfigManager.config.hidden.pearlNowSoundVolume.coerceIn(0f, 2f)
+        if (volume <= 0f) return
+        // Use a high-pitched note block for clear, distinguishable feedback.
+        player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), volume, 1.8f)
+    }
+
+    private fun timerString(flightTimeMs: Long, isDoublePearl: Boolean): String? {
+        if (!grabbing || grabStartTick < 0) return null
+        val cfg = FamilyConfigManager.config.hidden
+
+        val ticksSinceGrab = (tickCount - grabStartTick).coerceAtLeast(0)
+        val flightTicks = (flightTimeMs / 50L).toInt()
+        val maxTicks = (getMaxTimeMs() / 50L).toInt()
+        val delayTicks = (cfg.pearlTimerDelay.toLong() / 50L).toInt()
+
+        val remaining = if (isDoublePearl) {
+            val dDelayTicks = (cfg.pearlDPearlLandDelay.toLong() / 50L).toInt()
+            (maxTicks + dDelayTicks) - ticksSinceGrab - flightTicks + delayTicks
+        } else {
+            maxTicks - ticksSinceGrab - flightTicks + delayTicks
+        }
+
+        val remainingMs = remaining * 50
+        return when {
+            remainingMs <= 0   -> "§aNOW"
+            remainingMs <= 500 -> "§c${remainingMs}ms"
+            remainingMs <= 1000 -> "§e${remainingMs}ms"
+            else                -> "§f${remainingMs}ms"
+        }
+    }
+
+    private fun parseColor(s: String, fallback: FloatArray = floatArrayOf(0.5f, 0.8f, 1f, 1f)): FloatArray {
+        return try {
+            val p = s.split(":")
+            floatArrayOf(
+                p[2].toInt() / 255f,
+                p[3].toInt() / 255f,
+                p[4].toInt() / 255f,
+                p[1].toInt() / 255f
+            )
+        } catch (e: Exception) { fallback }
+    }
+
+    private fun yOffsetFor(pre: Pre): Double {
+        val cfg = FamilyConfigManager.config.hidden
+        if (!cfg.pearlOffsetsEnabled) return 0.0
+        return when (pre) {
+            Pre.SHOP     -> cfg.pearlShopOff.toDouble()
+            Pre.X        -> cfg.pearlXOff.toDouble()
+            Pre.X_CANNON -> cfg.pearlXCannonOff.toDouble()
+            Pre.EQUALS   -> cfg.pearlEqualsOff.toDouble()
+            Pre.SLASH    -> cfg.pearlSlashOff.toDouble()
+            Pre.TRIANGLE -> cfg.pearlTriangleOff.toDouble()
+            Pre.SQUARE   -> cfg.pearlSquareOff.toDouble()
+            Pre.NONE     -> 0.0
+        }
+    }
+
+    /**
+     * PawsUp's sky-marker render gate: only X_CANNON@X_CANNON, SHOP@SHOP, and
+     * TRIANGLE@SHOP (with newPrio) get high-arc waypoints.
+     */
+    private fun shouldRenderSkyMarker(place: Place, pre: Pre, useNewPrio: Boolean): Boolean {
+        if (place == Place.X_CANNON && pre == Pre.X_CANNON) return true
+        if (place == Place.SHOP     && pre == Pre.SHOP)     return true
+        if (place == Place.TRIANGLE && pre == Pre.SHOP && useNewPrio) return true
+        return false
+    }
+
+    /**
+     * For occupancy fallback: returns the list of Places the player could
+     * still pearl to. Excludes occupied Places and (optionally) Places marked
+     * missing in chat.
+     */
+    private fun availableFallbackPlaces(): List<Place> {
+        val cfg = FamilyConfigManager.config.hidden
+        return Place.values().filter { p ->
+            p !in occupiedPlaces &&
+                    (!cfg.pearlHideOnMissing || p !in MissingSupplies.missing)
+        }
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────
+
+    fun onWorldRender(matrices: MatrixStack, camera: Camera) {
+        if (!hasWaypoints()) return
+        val cfg = FamilyConfigManager.config.hidden
+        val mc = MinecraftClient.getInstance()
+        val player = mc.player ?: return
+        val immediate = mc.bufferBuilders?.entityVertexConsumers ?: return
+
+        val eye = player.getCameraPosVec(1f)
+        val pre = Pre.getClosestSpot(eye)
+        if (pre == Pre.NONE) return
+
+        val spawnPos = eye
+
+        val color = parseColor(cfg.pearlColor)
+        val dColor = parseColor(cfg.pearlDPearlColor, floatArrayOf(1f, 0.78f, 0.31f, 1f))
+        val skyColor = parseColor(cfg.pearlSkyColor, floatArrayOf(0.78f, 1f, 0.31f, 1f))
+
+        val cam = camera.pos
+        matrices.push()
+        matrices.translate(-cam.x, -cam.y, -cam.z)
+
+        // ── Main waypoint OR fallback to all-other-piles ───────────────
+        val mainPlace = preToPlace(pre)
+        val supplyDest = Prio.getSupplyForSpot(pre)
+        val mainHidden = mainPlace != null && mainPlace in occupiedPlaces
+
+        // SQUARE special-case: Prio.getSupplyForSpot(SQUARE) returns the first
+        // missing supply. If no one has called "No X!" in chat, supplyDest is
+        // null. In that case, fall through to the all-other-piles fallback so
+        // the SQUARE area still gives the player something to aim at.
+        val squareNoTarget = (pre == Pre.SQUARE && supplyDest == null)
+
+        if (supplyDest != null && !mainHidden) {
+            // Normal path: render the single waypoint to our designated supply.
+            val adjusted = Vec3d(supplyDest.x, supplyDest.y + yOffsetFor(pre), supplyDest.z)
+            val sol = PearlCalculator.solvePearl(false, eye, spawnPos, adjusted)
+            if (sol != null) {
+                drawWaypoint(matrices, immediate, sol.aimPoint, color, cfg.pearlSize.toDouble(), cfg.pearlShape)
+                if (cfg.pearlTimer) {
+                    val label = timerString(sol.flightTimeMs, isDoublePearl = false)
+                        ?: "§7${sol.flightTimeMs}ms"
+                    drawLabel(matrices, immediate, sol.aimPoint, label, cfg.pearlTimerScale, cfg.pearlTimerPos)
+                }
+            }
+        } else if (mainHidden || squareNoTarget) {
+            // Fallback: either this pre's designated pile is occupied, or we're
+            // in SQUARE with no missing-supply target. Render waypoints to every
+            // unoccupied + unmissing pile so the player can deposit somewhere.
+            for (place in availableFallbackPlaces()) {
+                if (place == mainPlace) continue   // already known to be occupied
+                val sol = PearlCalculator.solvePearl(false, eye, spawnPos, place.location) ?: continue
+                drawWaypoint(matrices, immediate, sol.aimPoint, color, cfg.pearlSize.toDouble(), cfg.pearlShape)
+                if (cfg.pearlTimer) {
+                    val label = timerString(sol.flightTimeMs, isDoublePearl = false)
+                        ?: "§7${sol.flightTimeMs}ms"
+                    drawLabel(matrices, immediate, sol.aimPoint, label, cfg.pearlTimerScale, cfg.pearlTimerPos)
+                }
+            }
+        }
+
+        // ── Sky marker — restricted to PawsUp's 3 cases, only when main path is active ──
+        if (cfg.pearlSkyPearls && !mainHidden && mainPlace != null && supplyDest != null
+            && shouldRenderSkyMarker(mainPlace, pre, FamilyConfigManager.config.hidden.pearlNewPrio)) {
+            val adjusted = Vec3d(supplyDest.x, supplyDest.y + yOffsetFor(pre), supplyDest.z)
+            val sky = PearlCalculator.solvePearl(true, eye, spawnPos, adjusted)
+            if (sky != null) {
+                drawWaypoint(matrices, immediate, sky.aimPoint, skyColor, cfg.pearlSkySize.toDouble(), cfg.pearlShape)
+            }
+        }
+
+        // ── Double pearls — fixed handoff routes ───────────────────────
+        // PawsUp's logic: for each route whose `pre` matches the player's current
+        // Pre area, run a HIGH-ARC pearl solve from eye → dp.location, and draw
+        // the waypoint at the SOLVER'S AIM POINT (a point along the player's
+        // required look direction), not at the literal handoff coordinate.
+        // Drawing at dp.location directly puts the box in the ground / behind
+        // walls / out of view depending on player position.
+        if (cfg.pearlDPearls) {
+            for (dp in DoublePearls.dPearls.values) {
+                if (dp.pre != pre) continue
+
+                val destPlace = preToPlace(dp.drop)
+                if (destPlace != null && destPlace in occupiedPlaces) continue
+                if (cfg.pearlHideOnMissing && destPlace != null && destPlace in MissingSupplies.missing) continue
+
+                // High-arc solve to the mid-air handoff coordinate.
+                val sol = PearlCalculator.solvePearl(true, eye, spawnPos, dp.location) ?: continue
+                drawWaypoint(matrices, immediate, sol.aimPoint, dColor, cfg.pearlDPearlSize.toDouble(), cfg.pearlShape)
+
+                if (cfg.pearlDPearlTimer) {
+                    // Mirror main-waypoint behavior: live timer when grabbing,
+                    // static gray flight-time hint when idle.
+                    val label = timerString(sol.flightTimeMs, isDoublePearl = true)
+                        ?: "§7${sol.flightTimeMs}ms"
+                    drawLabel(matrices, immediate, sol.aimPoint, label, cfg.pearlDPearlTimerSize, cfg.pearlTimerPos)
+                }
+            }
+        }
+
+        matrices.pop()
+        immediate.draw()
+    }
+
+    // ── Shape drawing ──────────────────────────────────────────────────
+
+    private fun drawWaypoint(
+        matrices: MatrixStack,
+        immediate: VertexConsumerProvider.Immediate,
+        pos: Vec3d,
+        color: FloatArray,
+        size: Double,
+        shape: Int,
+    ) {
+        val r = color[0]; val g = color[1]; val b = color[2]; val a = color[3]
+        val half = size.coerceAtLeast(0.05) / 2.0
+        when (shape) {
+            0, 1 -> {
+                val box = Box(
+                    pos.x - half, pos.y - half, pos.z - half,
+                    pos.x + half, pos.y + half, pos.z + half
+                )
+                run {
+                    val buf = immediate.getBuffer(RenderLayer.getLines())
+                    VertexRendering.drawBox(matrices.peek(), buf, box, r, g, b, a)
+                    immediate.draw(RenderLayer.getLines())
+                }
+                GL11.glDisable(GL11.GL_DEPTH_TEST)
+                run {
+                    val buf = immediate.getBuffer(RenderLayer.getLines())
+                    VertexRendering.drawBox(matrices.peek(), buf, box, r, g, b, a * 0.3f)
+                    immediate.draw(RenderLayer.getLines())
+                }
+                GL11.glEnable(GL11.GL_DEPTH_TEST)
+            }
+            2 -> drawHorizontalSquare(matrices, immediate, pos, half, color)
+            3 -> drawHorizontalCircle(matrices, immediate, pos, half, color)
+        }
+    }
+
+    private fun drawHorizontalSquare(
+        matrices: MatrixStack,
+        immediate: VertexConsumerProvider.Immediate,
+        center: Vec3d,
+        half: Double,
+        color: FloatArray,
+    ) {
+        val r = color[0]; val g = color[1]; val b = color[2]; val a = color[3]
+        val cx = center.x.toFloat(); val cy = center.y.toFloat(); val cz = center.z.toFloat()
+        val h = half.toFloat()
+        fun emit(alpha: Float) {
+            val buf = immediate.getBuffer(RenderLayer.getLines())
+            val pose = matrices.peek()
+            val pts = arrayOf(
+                Pair(cx - h, cz - h),
+                Pair(cx + h, cz - h),
+                Pair(cx + h, cz + h),
+                Pair(cx - h, cz + h),
+                Pair(cx - h, cz - h),
+            )
+            for (i in 0 until pts.size - 1) {
+                val (x0, z0) = pts[i]
+                val (x1, z1) = pts[i + 1]
+                val dx = x1 - x0; val dz = z1 - z0
+                val len = sqrt((dx * dx + dz * dz).toDouble()).toFloat().coerceAtLeast(1e-4f)
+                buf.vertex(pose, x0, cy, z0).color(r, g, b, alpha).normal(pose, dx / len, 0f, dz / len)
+                buf.vertex(pose, x1, cy, z1).color(r, g, b, alpha).normal(pose, dx / len, 0f, dz / len)
+            }
+            immediate.draw(RenderLayer.getLines())
+        }
+        emit(a)
+        GL11.glDisable(GL11.GL_DEPTH_TEST); emit(a * 0.3f); GL11.glEnable(GL11.GL_DEPTH_TEST)
+    }
+
+    private fun drawHorizontalCircle(
+        matrices: MatrixStack,
+        immediate: VertexConsumerProvider.Immediate,
+        center: Vec3d,
+        radius: Double,
+        color: FloatArray,
+    ) {
+        val r = color[0]; val g = color[1]; val b = color[2]; val a = color[3]
+        val cx = center.x.toFloat(); val cy = center.y.toFloat(); val cz = center.z.toFloat()
+        val segments = 32
+        fun emit(alpha: Float) {
+            val buf = immediate.getBuffer(RenderLayer.getLines())
+            val pose = matrices.peek()
+            val twoPi = (Math.PI * 2.0).toFloat()
+            var prevX = (cx + radius).toFloat()
+            var prevZ = cz
+            for (i in 1..segments) {
+                val angle = twoPi * i / segments
+                val nx = (cx + radius * Math.cos(angle.toDouble())).toFloat()
+                val nz = (cz + radius * Math.sin(angle.toDouble())).toFloat()
+                val dx = nx - prevX; val dz = nz - prevZ
+                val len = sqrt((dx * dx + dz * dz).toDouble()).toFloat().coerceAtLeast(1e-4f)
+                buf.vertex(pose, prevX, cy, prevZ).color(r, g, b, alpha).normal(pose, dx / len, 0f, dz / len)
+                buf.vertex(pose, nx, cy, nz).color(r, g, b, alpha).normal(pose, dx / len, 0f, dz / len)
+                prevX = nx; prevZ = nz
+            }
+            immediate.draw(RenderLayer.getLines())
+        }
+        emit(a)
+        GL11.glDisable(GL11.GL_DEPTH_TEST); emit(a * 0.3f); GL11.glEnable(GL11.GL_DEPTH_TEST)
+    }
+
+    private fun drawLabel(
+        matrices: MatrixStack,
+        immediate: VertexConsumerProvider.Immediate,
+        aimPoint: Vec3d,
+        text: String,
+        scale: Float,
+        position: Int,
+    ) {
+        val mc = MinecraftClient.getInstance()
+        val tr = mc.textRenderer
+
+        val yOff = when (position) {
+            0 -> 0.7
+            1 -> -0.7
+            else -> 0.0
+        }
+
+        val baseScale = 0.025f * scale.coerceIn(0.1f, 10f)
+
+        matrices.push()
+        matrices.translate(aimPoint.x, aimPoint.y + yOff, aimPoint.z)
+        matrices.multiply(mc.gameRenderer.camera.rotation)
+        matrices.scale(baseScale, -baseScale, baseScale)
+
+        val w = tr.getWidth(text.replace(COLOR_CODE_REGEX, ""))
+        tr.draw(
+            text,
+            -w / 2f,
+            0f,
+            -1,
+            true,
+            matrices.peek().positionMatrix,
+            immediate,
+            net.minecraft.client.font.TextRenderer.TextLayerType.SEE_THROUGH,
+            0,
+            LightmapTextureManager.MAX_LIGHT_COORDINATE
+        )
+        matrices.pop()
+    }
+
+    // ── Debug ──────────────────────────────────────────────────────────
+
+    fun debugDump(): String {
+        val sb = StringBuilder()
+        val cfg = FamilyConfigManager.config.hidden
+        val player = MinecraftClient.getInstance().player
+
+        sb.append("§6[FA Pearl] §7Flags: ")
+            .append("§eenabled=").append(if (cfg.pearlWaypointsEnabled) "§atrue" else "§cfalse")
+            .append("§7 ")
+            .append("§einKuudra=").append(if (AutoRequeue.isInKuudra()) "§atrue" else "§cfalse")
+            .append("§7 ")
+            .append("§einP1=").append(if (KuudraPhase.isInP1()) "§atrue" else "§cfalse")
+            .append("\n")
+
+        sb.append("§7Kuudra tier: §e").append(AutoRequeue.kuudraTierIndex()).append(" §7|")
+            .append(" Talisman: §e").append(cfg.pearlTalismanTier).append(" §7|")
+            .append(" maxTime: §e").append(getMaxTimeMs()).append("ms\n")
+
+        sb.append("§7Grabbing: ")
+        if (grabbing) {
+            sb.append("§atrue §7startTick=§e$grabStartTick §7now=§e$tickCount §7elapsed=§e${(tickCount - grabStartTick) * 50}ms")
+            if (nowSoundPlayed) sb.append(" §a[NOW fired]")
+        } else {
+            sb.append("§cfalse")
+        }
+        sb.append("\n")
+
+        sb.append("§7Occupied: §e")
+            .append(if (occupiedPlaces.isEmpty()) "(none)" else occupiedPlaces.joinToString(", "))
+            .append("\n")
+
+        sb.append("§7Missing: §e")
+            .append(if (MissingSupplies.missing.isEmpty()) "(none)" else MissingSupplies.missing.joinToString(", "))
+            .append("\n")
+
+        if (player == null) {
+            sb.append("§c No player.\n"); return sb.toString()
+        }
+        val eye = player.getCameraPosVec(1f)
+        val pre = Pre.getClosestSpot(eye)
+        sb.append("§7Player @ §f${"%.1f".format(eye.x)}, ${"%.1f".format(eye.y)}, ${"%.1f".format(eye.z)}\n")
+        sb.append("§7Closest Pre: §e$pre\n")
+
+        val supply = Prio.getSupplyForSpot(pre)
+        val mainPlace = preToPlace(pre)
+        sb.append("§7Supply target: §e${supply ?: "(none)"} §7(place=§e${mainPlace ?: "?"}§7)\n")
+        if (supply != null) {
+            val sol = PearlCalculator.solvePearl(false, eye, eye, supply)
+            if (sol != null) {
+                sb.append("§a SOLVED: aim=${"%.1f".format(sol.aimPoint.x)},${"%.1f".format(sol.aimPoint.y)},${"%.1f".format(sol.aimPoint.z)}")
+                    .append(" §7yaw=${"%.1f".format(sol.lookYawDeg)}°")
+                    .append(" pitch=${"%.1f".format(sol.lookPitchDeg)}°")
+                    .append(" t=${sol.flightTimeMs}ms")
+                val tStr = timerString(sol.flightTimeMs, false)
+                if (tStr != null) sb.append(" timer=").append(tStr)
+                sb.append("\n")
+            } else {
+                sb.append("§c No solution found.\n")
+            }
+        }
+
+        // Mainhidden + SQUARE-no-target fallback info
+        val mainHidden = mainPlace != null && mainPlace in occupiedPlaces
+        val squareNoTarget = (pre == Pre.SQUARE && supply == null)
+        if (mainHidden || squareNoTarget) {
+            val reason = when {
+                mainHidden && squareNoTarget -> "main occupied + SQUARE no target"
+                mainHidden                   -> "main pile occupied"
+                else                         -> "SQUARE — no missing supplies called"
+            }
+            val avail = availableFallbackPlaces().filter { it != mainPlace }
+            sb.append("§7Fallback active (§e").append(reason).append("§7): §e")
+                .append(if (avail.isEmpty()) "(none)" else avail.joinToString(", "))
+                .append("\n")
+        }
+
+        // Double pearls debug — show every route, mark which are visible/hidden and why.
+        sb.append("§7Double Pearls: cfg=§e").append(cfg.pearlDPearls).append("\n")
+        for (dp in DoublePearls.dPearls.values) {
+            val active = dp.pre == pre
+            val destPlace = preToPlace(dp.drop)
+            val occluded = destPlace != null && destPlace in occupiedPlaces
+            val missing = cfg.pearlHideOnMissing && destPlace != null && destPlace in MissingSupplies.missing
+            val mark = when {
+                !active   -> "§8[wrong-pre]"
+                occluded  -> "§c[occupied]"
+                missing   -> "§c[missing]"
+                else      -> "§a[shown]"
+            }
+            sb.append("  ").append(mark).append(" §f${dp.id} §7@ ${"%.1f".format(dp.location.x)},${"%.1f".format(dp.location.y)},${"%.1f".format(dp.location.z)}\n")
+        }
+
+        return sb.toString()
     }
 }

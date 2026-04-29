@@ -24,7 +24,13 @@ object FamilyAddons : ClientModInitializer {
     override fun onInitializeClient() {
         LOGGER.info("FamilyAddons $VERSION loading...")
 
+        // FamilyConfigManager.load() does:
+        //  1. Reads config.json
+        //  2. Calls Whitelist.check(null) → loads cached whitelist state
+        //  3. Strips @Category from `hidden` if not whitelisted
+        //  4. Builds the MoulConfig editor
         FamilyConfigManager.load()
+
         KeyFetcher.fetchIfNeeded()
         TestCommand.register()
 
@@ -35,7 +41,7 @@ object FamilyAddons : ClientModInitializer {
     }
 
     private fun registerFeatures() {
-        //Auto-Updater
+        // Auto-Updater
         AutoUpdater.register()
 
         // Chat
@@ -49,9 +55,6 @@ object FamilyAddons : ClientModInitializer {
         ArachneTimer.register()
         GorillaTactics.register()
         PearlTimer.register()
-        PearlWaypoints.register()
-
-
 
         // Party
         PartyTracker.register()
@@ -69,10 +72,17 @@ object FamilyAddons : ClientModInitializer {
         Parkour.register()
         ParkourCommand.register()
 
-        // Kuudra
+        // Kuudra — KuudraPhase must register first since other features read its state.
+        KuudraPhase.register()
         DtTitle.register()
         AutoRequeue.register()
         InfernalKeyTracker.register()
+
+        // Whitelist-gated Kuudra features. KuudraCrateWaypoints.register() and
+        // PearlWaypoints.register() return immediately without wiring any
+        // handlers if Whitelist.isAllowed() is false.
+        KuudraCrateWaypoints.register()
+        PearlWaypoints.register()
 
         // Dungeons
         DungeonDtTitle.register()
@@ -85,14 +95,21 @@ object FamilyAddons : ClientModInitializer {
         BestiaryZoneHighlight.register()
 
         // Player Disguise (config-driven, no register needed — mixin reads config directly)
-        // PlayerDisguise is passive; mixins call PlayerDisguise.isEnabled() / getMobId() / includesSelf()
         SharedDisguiseSync.register()
 
         // Dev
         DevTools.register()
 
         // One-off events
-        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
+        ClientPlayConnectionEvents.JOIN.register { _, _, mc ->
+            // Re-run whitelist check with the actual player UUID. UUID isn't
+            // available at mod-init time so the load() above only loaded the
+            // cache — this gives us a fresh worker check on every join. If
+            // status changed since cache was written, the user gets a chat
+            // message asking to restart the game.
+            val uuid = mc.session?.uuidOrNull
+            FamilyConfigManager.recheckWhitelist(uuid)
+
             EntityHighlight.rescan()
             BestiaryZoneHighlight.refresh()
             SharedDisguiseSync.fetchAllNow() // Re-fetch disguises on every server join so they load immediately
@@ -126,7 +143,5 @@ object FamilyAddons : ClientModInitializer {
             else if (!mouseDown && hudEditorMouseWasDown) screen.onMouseRelease()
             hudEditorMouseWasDown = mouseDown
         }
-
-        LOGGER.info("FamilyAddons $VERSION loaded!")
     }
 }
