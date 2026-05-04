@@ -109,7 +109,7 @@ class HiddenConfig {
     @ConfigAccordionId(id = 11)
     @ConfigOption(name = "Waypoint Size", desc = "Size of the main aim-point waypoint.")
     @ConfigEditorSlider(minValue = 0.1f, maxValue = 3.0f, minStep = 0.05f)
-    var pearlSize = 0.5f
+    var pearlSize = 0.1f
 
     // ── Timer ────────────────────────────────
     @Expose @JvmField
@@ -128,7 +128,7 @@ class HiddenConfig {
     @ConfigAccordionId(id = 11)
     @ConfigOption(name = "Timer Scale", desc = "Text scale of the flight-time label.")
     @ConfigEditorSlider(minValue = 0.5f, maxValue = 4.0f, minStep = 0.1f)
-    var pearlTimerScale = 1.0f
+    var pearlTimerScale = 3.0f
 
     @Expose @JvmField
     @ConfigAccordionId(id = 11)
@@ -166,7 +166,7 @@ class HiddenConfig {
     @ConfigAccordionId(id = 11)
     @ConfigOption(name = "Double Pearl Size", desc = "Size of the double-pearl aim point.")
     @ConfigEditorSlider(minValue = 0.1f, maxValue = 3.0f, minStep = 0.05f)
-    var pearlDPearlSize = 0.4f
+    var pearlDPearlSize = 0.1f
 
     @Expose @JvmField
     @ConfigAccordionId(id = 11)

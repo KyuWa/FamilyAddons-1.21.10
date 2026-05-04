@@ -89,4 +89,48 @@ class KuudraConfig {
 
     @Expose @JvmField var keyTrackerHudX = 10
     @Expose @JvmField var keyTrackerHudY = 10
+
+    // ─────────────────────────────────────────────────────────────────────────────
+// KuudraConfig.kt — add 2 new public accordions: Pile Waypoints + Supply Waypoints
+//
+// Add these AFTER the Key Tracker accordion (id=3), before the closing brace.
+// Use accordion IDs 4 and 5.
+// ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Pile Waypoints accordion (id=4) ───────────────────────
+    @Expose @JvmField
+    @ConfigOption(name = "Pile Waypoints", desc = "")
+    @ConfigEditorAccordion(id = 4)
+    var pileWaypointsAccordion = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 4)
+    @ConfigOption(name = "Enable Pile Waypoints", desc = "Show beacon beams over Kuudra supply piles. Hides occupied piles automatically.")
+    @ConfigEditorBoolean
+    var pileWaypointsEnabled = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 4)
+    @ConfigOption(name = "Pile Beam Color", desc = "Color of the pile beacon beams.")
+    @ConfigEditorColour
+    var pileWaypointColor = "0:153:80:255:80"
+
+    // ── Supply Waypoints accordion (id=5) ─────────────────────
+    @Expose @JvmField
+    @ConfigOption(name = "Supply Waypoints", desc = "")
+    @ConfigEditorAccordion(id = 5)
+    var supplyWaypointsAccordion = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 5)
+    @ConfigOption(name = "Enable Supply Waypoints", desc = "Show beacon beams over Kuudra supply crates being carried by giants.")
+    @ConfigEditorBoolean
+    var supplyWaypointsEnabled = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 5)
+    @ConfigOption(name = "Supply Beam Color", desc = "Color of the supply crate beacon beams.")
+    @ConfigEditorColour
+    var supplyWaypointColor = "0:153:255:200:80"
+
 }

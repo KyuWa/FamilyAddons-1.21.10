@@ -10,7 +10,6 @@ import net.minecraft.client.render.RenderLayer
 import net.minecraft.client.render.VertexConsumerProvider
 import net.minecraft.client.render.VertexRendering
 import net.minecraft.client.util.math.MatrixStack
-import net.minecraft.entity.decoration.ArmorStandEntity
 import net.minecraft.sound.SoundEvents
 import net.minecraft.util.math.Box
 import net.minecraft.util.math.Vec3d
@@ -62,9 +61,9 @@ object PearlWaypoints {
     /** Set true after the NOW sound has fired for the current grab. Reset on grab start. */
     @Volatile private var nowSoundPlayed: Boolean = false
 
-    /** Set of piles currently displaying a "SUPPLIES RECEIVED" armor stand. */
-    private val occupiedPlaces: MutableSet<Place> = java.util.concurrent.ConcurrentHashMap.newKeySet()
-    private var occupancyScanTicker = 0
+    // Occupancy ("SUPPLIES RECEIVED" stands) is owned by KuudraOccupancy now
+    // and shared across PearlWaypoints + PileWaypoints. Read from
+    // KuudraOccupancy.occupiedPlaces wherever needed.
 
     // ── PawsUp's pickTimings table ─────────────────────────────────────
     // [talisman 0..3 = NoTali..T3][kuudraTier-1 0..4 = T1..T5] → ticks
@@ -78,7 +77,6 @@ object PearlWaypoints {
     // ── Public API ─────────────────────────────────────────────────────
 
     fun hasWaypoints(): Boolean {
-        if (!org.kyowa.familyaddons.Whitelist.isAllowed()) return false
         if (!FamilyConfigManager.config.hidden.pearlWaypointsEnabled) return false
         if (!AutoRequeue.isInKuudra()) return false
         if (!KuudraPhase.isInP1()) return false
@@ -107,20 +105,12 @@ object PearlWaypoints {
     }
 
     fun register() {
-        // Whitelist gate — non-whitelisted users don't register any handlers,
-        // so this feature is fully inert (not just config-hidden).
-        if (!org.kyowa.familyaddons.Whitelist.isAllowed()) {
-            return
-        }
-
         ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
             MissingSupplies.clear()
-            occupiedPlaces.clear()
             clearGrab()
         }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             MissingSupplies.clear()
-            occupiedPlaces.clear()
             clearGrab()
         }
 
@@ -134,7 +124,6 @@ object PearlWaypoints {
 
             if (!KuudraPhase.isInP1()) {
                 if (grabbing) clearGrab()
-                if (occupiedPlaces.isNotEmpty()) occupiedPlaces.clear()
                 if (MissingSupplies.missing.isNotEmpty()) MissingSupplies.clear()
             }
 
@@ -148,11 +137,7 @@ object PearlWaypoints {
                 }
             }
 
-            occupancyScanTicker++
-            if (occupancyScanTicker >= 10) {
-                occupancyScanTicker = 0
-                scanOccupancy(client)
-            }
+            // Occupancy scanning is handled by KuudraOccupancy.register().
         }
     }
 
@@ -178,35 +163,7 @@ object PearlWaypoints {
         else -> null
     }
 
-    private fun scanOccupancy(client: MinecraftClient) {
-        val world = client.world ?: run { occupiedPlaces.clear(); return }
-        if (!hasWaypoints()) {
-            occupiedPlaces.clear()
-            return
-        }
-        val newOccupied = mutableSetOf<Place>()
-        for (entity in world.entities) {
-            if (entity !is ArmorStandEntity) continue
-            val nameText = entity.customName ?: entity.name
-            val nameStr = nameText.string.replace(COLOR_CODE_REGEX, "").trim()
-            if (!nameStr.contains("SUPPLIES RECEIVED", ignoreCase = true)) continue
-            val ex = entity.x; val ez = entity.z
-            var nearest: Place? = null
-            var bestDistSq = 6.0 * 6.0
-            for (place in Place.values()) {
-                val dx = place.location.x - ex
-                val dz = place.location.z - ez
-                val d = dx * dx + dz * dz
-                if (d <= bestDistSq) {
-                    bestDistSq = d
-                    nearest = place
-                }
-            }
-            if (nearest != null) newOccupied.add(nearest)
-        }
-        occupiedPlaces.clear()
-        occupiedPlaces.addAll(newOccupied)
-    }
+    // scanOccupancy() moved to KuudraOccupancy.scan() — shared with PileWaypoints.
 
     private fun preToPlace(pre: Pre): Place? {
         val target = Prio.getSupplyForSpot(pre) ?: return null
@@ -330,7 +287,7 @@ object PearlWaypoints {
     private fun availableFallbackPlaces(): List<Place> {
         val cfg = FamilyConfigManager.config.hidden
         return Place.values().filter { p ->
-            p !in occupiedPlaces &&
+            p !in KuudraOccupancy.occupiedPlaces &&
                     (!cfg.pearlHideOnMissing || p !in MissingSupplies.missing)
         }
     }
@@ -361,7 +318,7 @@ object PearlWaypoints {
         // ── Main waypoint OR fallback to all-other-piles ───────────────
         val mainPlace = preToPlace(pre)
         val supplyDest = Prio.getSupplyForSpot(pre)
-        val mainHidden = mainPlace != null && mainPlace in occupiedPlaces
+        val mainHidden = mainPlace != null && mainPlace in KuudraOccupancy.occupiedPlaces
 
         // SQUARE special-case: Prio.getSupplyForSpot(SQUARE) returns the first
         // missing supply. If no one has called "No X!" in chat, supplyDest is
@@ -419,7 +376,7 @@ object PearlWaypoints {
                 if (dp.pre != pre) continue
 
                 val destPlace = preToPlace(dp.drop)
-                if (destPlace != null && destPlace in occupiedPlaces) continue
+                if (destPlace != null && destPlace in KuudraOccupancy.occupiedPlaces) continue
                 if (cfg.pearlHideOnMissing && destPlace != null && destPlace in MissingSupplies.missing) continue
 
                 // High-arc solve to the mid-air handoff coordinate.
@@ -611,7 +568,7 @@ object PearlWaypoints {
         sb.append("\n")
 
         sb.append("§7Occupied: §e")
-            .append(if (occupiedPlaces.isEmpty()) "(none)" else occupiedPlaces.joinToString(", "))
+            .append(if (KuudraOccupancy.occupiedPlaces.isEmpty()) "(none)" else KuudraOccupancy.occupiedPlaces.joinToString(", "))
             .append("\n")
 
         sb.append("§7Missing: §e")
@@ -645,7 +602,7 @@ object PearlWaypoints {
         }
 
         // Mainhidden + SQUARE-no-target fallback info
-        val mainHidden = mainPlace != null && mainPlace in occupiedPlaces
+        val mainHidden = mainPlace != null && mainPlace in KuudraOccupancy.occupiedPlaces
         val squareNoTarget = (pre == Pre.SQUARE && supply == null)
         if (mainHidden || squareNoTarget) {
             val reason = when {
@@ -664,7 +621,7 @@ object PearlWaypoints {
         for (dp in DoublePearls.dPearls.values) {
             val active = dp.pre == pre
             val destPlace = preToPlace(dp.drop)
-            val occluded = destPlace != null && destPlace in occupiedPlaces
+            val occluded = destPlace != null && destPlace in KuudraOccupancy.occupiedPlaces
             val missing = cfg.pearlHideOnMissing && destPlace != null && destPlace in MissingSupplies.missing
             val mark = when {
                 !active   -> "§8[wrong-pre]"

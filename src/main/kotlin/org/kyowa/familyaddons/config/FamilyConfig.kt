@@ -36,6 +36,10 @@ open class FamilyConfig : Config() {
     var utilities = UtilitiesConfig()
 
     @Expose @JvmField
+    @Category(name = "Crimson Isle", desc = "Crimson Isle features")
+    var crimsonIsle = CrimsonIsleConfig()
+
+    @Expose @JvmField
     @Category(name = "Party", desc = "Party management features")
     var party = PartyConfig()
 
@@ -87,16 +91,6 @@ open class FamilyConfig : Config() {
     @Category(name = "Dev", desc = "Developer debug tools")
     var dev = DevConfig()
 
-    /**
-     * Hidden config — gson serializes this (so settings round-trip across
-     * launches and across whitelist status changes). MoulConfig sees no
-     * @Category annotation, so the GUI doesn't render a Hidden category for
-     * non-whitelisted users.
-     *
-     * Feature code accesses `cfg.hidden.crateWaypointsEnabled` etc., which
-     * compiles regardless of whether this is a FamilyConfig or
-     * FamilyConfigPrivate instance.
-     */
     @Expose @JvmField
     var hidden = HiddenConfig()
 }

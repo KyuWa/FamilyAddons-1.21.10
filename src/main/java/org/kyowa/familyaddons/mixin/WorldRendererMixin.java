@@ -12,6 +12,8 @@ import org.kyowa.familyaddons.features.KuudraCrateWaypoints;
 import org.kyowa.familyaddons.features.NpcLocations;
 import org.kyowa.familyaddons.features.Parkour;
 import org.kyowa.familyaddons.features.PearlWaypoints;
+import org.kyowa.familyaddons.features.PileWaypoints;
+import org.kyowa.familyaddons.features.SupplyWaypoints;
 import org.kyowa.familyaddons.features.Waypoints;
 import org.kyowa.familyaddons.features.WorldScanner;
 import org.spongepowered.asm.mixin.Mixin;
@@ -39,6 +41,7 @@ public class WorldRendererMixin {
             boolean renderSky,
             CallbackInfo ci
     ) {
+        // Early-out if no feature wants to render
         if (!Waypoints.INSTANCE.hasWaypoints() &&
                 !CorpseESP.INSTANCE.hasCachedCorpses() &&
                 !NpcLocations.INSTANCE.hasActiveWaypoints() &&
@@ -46,7 +49,9 @@ public class WorldRendererMixin {
                 !EntityHighlight.INSTANCE.hasHighlighted() &&
                 !WorldScanner.INSTANCE.hasWaypoints() &&
                 !KuudraCrateWaypoints.INSTANCE.hasCrates() &&
-                !PearlWaypoints.INSTANCE.hasWaypoints()) return;
+                !PearlWaypoints.INSTANCE.hasWaypoints() &&
+                !PileWaypoints.INSTANCE.hasBeams() &&
+                !SupplyWaypoints.INSTANCE.hasBeams()) return;
 
         fa_matrices.loadIdentity();
         fa_matrices.multiplyPositionMatrix(positionMatrix);
@@ -59,5 +64,7 @@ public class WorldRendererMixin {
         WorldScanner.INSTANCE.onWorldRender(fa_matrices, camera);
         KuudraCrateWaypoints.INSTANCE.onWorldRender(fa_matrices, camera);
         PearlWaypoints.INSTANCE.onWorldRender(fa_matrices, camera);
+        PileWaypoints.INSTANCE.onWorldRender(fa_matrices, camera);
+        SupplyWaypoints.INSTANCE.onWorldRender(fa_matrices, camera);
     }
 }

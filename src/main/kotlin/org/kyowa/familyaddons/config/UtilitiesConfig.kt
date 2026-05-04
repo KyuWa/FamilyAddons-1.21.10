@@ -1,11 +1,44 @@
 package org.kyowa.familyaddons.config
 
 import com.google.gson.annotations.Expose
+import io.github.notenoughupdates.moulconfig.annotations.ConfigAccordionId
+import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorAccordion
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorBoolean
 import io.github.notenoughupdates.moulconfig.annotations.ConfigEditorSlider
 import io.github.notenoughupdates.moulconfig.annotations.ConfigOption
 
 class UtilitiesConfig {
+
+    // ── Camera ────────────────────────────────────────────────────────
+    @Expose @JvmField
+    @ConfigOption(name = "Camera", desc = "")
+    @ConfigEditorAccordion(id = 80)
+    var cameraAccordion = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 80)
+    @ConfigOption(name = "Camera Clip", desc = "Allow the third-person camera to clip through blocks instead of zooming in when something is behind you.")
+    @ConfigEditorBoolean
+    var cameraClip = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 80)
+    @ConfigOption(name = "No Front Camera", desc = "Skip 3rd-person front view when cycling perspectives — F5 toggles only between 1st and 3rd person.")
+    @ConfigEditorBoolean
+    var noFrontCamera = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 80)
+    @ConfigOption(name = "Custom Distance", desc = "Use a custom third-person camera distance instead of vanilla 4.0.")
+    @ConfigEditorBoolean
+    var cameraDistEnabled = false
+
+    @Expose @JvmField
+    @ConfigAccordionId(id = 80)
+    @ConfigOption(name = "Distance", desc = "Distance of the third-person camera from the player. Vanilla is 4.0. Has no effect unless Custom Distance is enabled.")
+    @ConfigEditorSlider(minValue = 3f, maxValue = 12f, minStep = 0.1f)
+    var cameraDist = 4f
+
     @Expose @JvmField
     @ConfigOption(name = "Command Shortcuts", desc = "Enable short command aliases: /museum, /pw, /koff")
     @ConfigEditorBoolean

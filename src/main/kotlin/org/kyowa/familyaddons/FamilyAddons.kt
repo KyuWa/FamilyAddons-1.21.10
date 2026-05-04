@@ -55,6 +55,10 @@ object FamilyAddons : ClientModInitializer {
         ArachneTimer.register()
         GorillaTactics.register()
         PearlTimer.register()
+        CameraHelper.register()
+
+        // Crimson Isles
+        MiniBossTimer.register()
 
         // Party
         PartyTracker.register()
@@ -77,6 +81,10 @@ object FamilyAddons : ClientModInitializer {
         DtTitle.register()
         AutoRequeue.register()
         InfernalKeyTracker.register()
+        KuudraOccupancy.register()
+        PileWaypoints.register()
+        SupplyWaypoints.register()
+        KuudraGiants.register()
 
         // Whitelist-gated Kuudra features. KuudraCrateWaypoints.register() and
         // PearlWaypoints.register() return immediately without wiring any

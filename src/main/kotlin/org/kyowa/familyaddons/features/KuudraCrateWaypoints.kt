@@ -1,7 +1,5 @@
 package org.kyowa.familyaddons.features
 
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.render.Camera
 import net.minecraft.client.render.RenderLayer
@@ -17,36 +15,28 @@ import org.kyowa.familyaddons.config.FamilyConfigManager
 import org.lwjgl.opengl.GL11
 
 /**
- * Kuudra supply-crate ESP.
+ * Kuudra supply-crate ESP — drag radius circle + crate hitbox wireframe.
  *
- * Detection:
- *  - Each tick, scan world entities. The arena floor is around y=70; we only
- *    consider entities with 60 < y < 78.
- *  - GiantEntity → "carrier" of a crate. The crate's visible position is
- *    derived from the giant's body + yaw via cratePosVec().
- *  - ZombieEntity → small interaction hitbox. Many ordinary zombies live in a
- *    Kuudra arena; we only highlight ones within 3 blocks of an actual crate.
+ * Detection has been moved to [KuudraGiants] so the public [SupplyWaypoints]
+ * feature can read the same giant list without scanning twice. This class
+ * just consumes that data and renders.
  *
- * Rendering:
- *  - Drag radius drawn as a horizontal circle at the crate's exact (x,y,z).
- *  - Crate hitbox is a wireframe outline (no filled mode).
+ * Whitelist gating: register() returns early if the player isn't allowed,
+ * so this feature is fully inert (no event handlers) for non-whitelisted
+ * users. The giant scan in [KuudraGiants] still runs if the public
+ * SupplyWaypoints feature is on, but this class's rendering won't fire.
  *
- * Phase gating:
- *  - Crates only matter during Phase 1 (supply collection). After Elle's
- *    "OMG! Great work collecting my supplies!" line, KuudraPhase flips
- *    inP1=false and this feature stops rendering / scanning.
+ * Phase gating happens inside [KuudraGiants] — outside Phase 1 the giant
+ * list is empty, so [hasCrates] returns false naturally.
  *
  * In-range color logic:
  *  - Crate switches to "in reach" color when player eye is within REACH_DIST
  *    of the closest point on the zombie's bounding box.
  *  - Drag switches to "in range" color when the player's fishing bobber is
- *    within DRAG_DIST of the crate AND the bobber Y is in 70..80. No rod out
- *    means never green.
+ *    within DRAG_DIST of the crate AND the bobber Y is in 70..80. No rod
+ *    out means never green.
  */
 object KuudraCrateWaypoints {
-
-    private const val MIN_Y = 60.0
-    private const val MAX_Y = 78.0
 
     private const val REACH_DIST = 2.75
     private const val DRAG_DIST  = 4.75
@@ -54,22 +44,11 @@ object KuudraCrateWaypoints {
     // Zombie must be within this many blocks of a crate to be drawn.
     private const val ZOMBIE_TO_CRATE_MAX = 3.0
 
-    // Crate visual position constants (from PawsUp's published values).
-    // Both X and Z use the SAME yaw bias.
-    private const val CRATE_YAW_BIAS_DEG = 130.0
-    private const val CRATE_X_RADIUS     = 2.7
-    private const val CRATE_Z_RADIUS     = 5.2
-    // World-space Y where Hypixel places the crate model — independent of the giant's Y.
-    private const val CRATE_WORLD_Y      = 75.5
-
     // Bobber Y must lie in this range for the drag to register.
     private const val BOBBER_Y_MIN = 70.0
     private const val BOBBER_Y_MAX = 80.0
 
     private const val CIRCLE_SEGMENTS = 48
-
-    private val giants = LinkedHashSet<GiantEntity>()
-    private val zombies = LinkedHashSet<ZombieEntity>()
 
     private fun cfg() = FamilyConfigManager.config.hidden
     private fun isInKuudra() = AutoRequeue.isInKuudra()
@@ -79,23 +58,7 @@ object KuudraCrateWaypoints {
         if (!cfg().crateWaypointsEnabled) return false
         if (!isInKuudra()) return false
         if (!KuudraPhase.isInP1()) return false
-        return giants.isNotEmpty() || zombies.isNotEmpty()
-    }
-
-    /**
-     * Visual position of a crate. Derived from giant.x, giant.z, giant.yaw, and
-     * a fixed world Y. Both X and Z share the same `(yaw + 130°)` angle but
-     * different radii.
-     *
-     *   x = giant.x + 2.7 * cos((yaw + 130°) * π/180)
-     *   y = 75.5  (world-space, independent of giant)
-     *   z = giant.z + 5.2 * sin((yaw + 130°) * π/180)
-     */
-    private fun cratePosVec(g: GiantEntity): Vec3d {
-        val angleRad = Math.toRadians(g.yaw.toDouble() + CRATE_YAW_BIAS_DEG)
-        val x = g.x + CRATE_X_RADIUS * Math.cos(angleRad)
-        val z = g.z + CRATE_Z_RADIUS * Math.sin(angleRad)
-        return Vec3d(x, CRATE_WORLD_Y, z)
+        return KuudraGiants.giants.isNotEmpty() || KuudraGiants.zombies.isNotEmpty()
     }
 
     /** Distance from player eye to closest point on the zombie's hitbox. */
@@ -119,53 +82,18 @@ object KuudraCrateWaypoints {
         val hook: FishingBobberEntity = player.fishHook ?: return false
         val bobberPos = Vec3d(hook.x, hook.y, hook.z)
         if (bobberPos.y < BOBBER_Y_MIN || bobberPos.y > BOBBER_Y_MAX) return false
-        return cratePosVec(g).distanceTo(bobberPos) <= DRAG_DIST
+        return KuudraGiants.cratePosFor(g).distanceTo(bobberPos) <= DRAG_DIST
     }
 
     fun register() {
         // Whitelist gate — non-whitelisted users don't register any handlers,
-        // so this feature is fully inert (not just config-hidden).
+        // so this feature is fully inert (not just config-hidden). Note that
+        // KuudraGiants registers separately and may still scan if the public
+        // SupplyWaypoints feature is enabled, but no rendering happens here.
         if (!org.kyowa.familyaddons.Whitelist.isAllowed()) {
             return
         }
-
-        ClientTickEvents.END_CLIENT_TICK.register {
-            if (!cfg().crateWaypointsEnabled) {
-                if (giants.isNotEmpty() || zombies.isNotEmpty()) {
-                    giants.clear(); zombies.clear()
-                }
-                return@register
-            }
-            if (!isInKuudra() || !KuudraPhase.isInP1()) {
-                if (giants.isNotEmpty() || zombies.isNotEmpty()) {
-                    giants.clear(); zombies.clear()
-                }
-                return@register
-            }
-            scan()
-        }
-        ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            giants.clear(); zombies.clear()
-        }
-        ClientPlayConnectionEvents.JOIN.register { _, _, _ ->
-            giants.clear(); zombies.clear()
-        }
-    }
-
-    private fun scan() {
-        val world = MinecraftClient.getInstance().world ?: return
-        giants.removeIf { !it.isAlive || it.y < MIN_Y || it.y > MAX_Y }
-        zombies.removeIf { !it.isAlive || it.y < MIN_Y || it.y > MAX_Y }
-        for (entity in world.entities) {
-            if (!entity.isAlive) continue
-            val y = entity.y
-            if (y < MIN_Y || y > MAX_Y) continue
-            when (entity) {
-                is GiantEntity  -> giants.add(entity)
-                is ZombieEntity -> zombies.add(entity)
-                else -> {}
-            }
-        }
+        // No tick handler needed — KuudraGiants owns the scan. We only render.
     }
 
     /** Parse "chroma:alpha:r:g:b" → Float[4] (r,g,b,a) in 0..1. */
@@ -201,9 +129,9 @@ object KuudraCrateWaypoints {
 
         // ── Drag hitbox: horizontal circle at each giant's crate position ──
         if (cfg.showDragHitbox) {
-            for (g in giants) {
+            for (g in KuudraGiants.giants) {
                 if (!g.isAlive) continue
-                val pos = cratePosVec(g)
+                val pos = KuudraGiants.cratePosFor(g)
                 val color = if (cfg.dragHitboxInRangeColorChange && bobberInDragRange(g)) dragRange else dragColor
                 drawHorizontalCircle(matrices, immediate, pos, DRAG_DIST, color)
             }
@@ -211,12 +139,12 @@ object KuudraCrateWaypoints {
 
         // ── Crate hitbox: small wireframe box around each near-crate zombie ─
         if (cfg.showCrateHitbox) {
-            for (z in zombies) {
+            for (z in KuudraGiants.zombies) {
                 if (!z.isAlive) continue
                 val zPos = Vec3d(z.x, z.y, z.z)
-                val nearestCrateDist = giants.asSequence()
+                val nearestCrateDist = KuudraGiants.giants.asSequence()
                     .filter { it.isAlive }
-                    .map { cratePosVec(it).distanceTo(zPos) }
+                    .map { KuudraGiants.cratePosFor(it).distanceTo(zPos) }
                     .minOrNull() ?: Double.MAX_VALUE
                 if (nearestCrateDist > ZOMBIE_TO_CRATE_MAX) continue
 
@@ -325,13 +253,15 @@ object KuudraCrateWaypoints {
         }
         sb.append("\n")
 
-        sb.append("§7Detected: §a${giants.size}§7 giants, §a${zombies.size}§7 zombies (in y-range $MIN_Y..$MAX_Y)\n")
+        val giants = KuudraGiants.giants
+        val zombies = KuudraGiants.zombies
+        sb.append("§7Detected: §a${giants.size}§7 giants, §a${zombies.size}§7 zombies\n")
 
         for (g in giants) {
-            val pos = cratePosVec(g)
+            val pos = KuudraGiants.cratePosFor(g)
             val drag = if (player?.fishHook != null) {
                 val h = player.fishHook!!
-                cratePosVec(g).distanceTo(Vec3d(h.x, h.y, h.z))
+                pos.distanceTo(Vec3d(h.x, h.y, h.z))
             } else null
             sb.append("§a Giant @ §f${"%.1f".format(g.x)}, ${"%.1f".format(g.y)}, ${"%.1f".format(g.z)}")
                 .append(" §7yaw=${"%.1f".format(g.yaw)}")
@@ -343,7 +273,7 @@ object KuudraCrateWaypoints {
             val zPos = Vec3d(z.x, z.y, z.z)
             val nearest = giants.asSequence()
                 .filter { it.isAlive }
-                .map { cratePosVec(it).distanceTo(zPos) }
+                .map { KuudraGiants.cratePosFor(it).distanceTo(zPos) }
                 .minOrNull() ?: Double.MAX_VALUE
             val visible = nearest <= ZOMBIE_TO_CRATE_MAX
             sb.append(if (visible) "§b" else "§8")

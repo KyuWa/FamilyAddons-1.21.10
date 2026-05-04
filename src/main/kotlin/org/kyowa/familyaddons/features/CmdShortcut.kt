@@ -12,6 +12,11 @@ object CmdShortcut {
         Shortcut("museum", "warp museum"),
         Shortcut("pw",     "p warp"),
         Shortcut("koff",   "p kickoffline"),
+        Shortcut("t5", "joininstance kuudra_infernal"),
+        Shortcut("t4", "joininstance kuudra_fiery"),
+        Shortcut("t3", "joininstance kuudra_burning"),
+        Shortcut("t2", "joininstance kuudra_hot"),
+        Shortcut("t1", "joininstance kuudra_normal")
     )
 
     fun register() {

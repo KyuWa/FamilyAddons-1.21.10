@@ -14,7 +14,8 @@
     "PlayerDisguiseMixin",
     "HotbarScrollMixin",
     "ServerTickPacketMixin",
-    "PearlInGameHudMixin"
+    "PearlInGameHudMixin",
+    "CameraMixin"
   ],
   "injectors": {
     "defaultRequire": 1
