@@ -3,13 +3,38 @@ package org.kyowa.familyaddons.mixin;
 import net.minecraft.client.render.Camera;
 import org.kyowa.familyaddons.features.CameraHelper;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+/**
+ * Three patches on net.minecraft.client.render.Camera:
+ *
+ *  1. clipToSpace(F) — when CameraClip is on, return the unclipped distance
+ *     so the camera passes through walls.
+ *
+ *  2. The argument to clipToSpace inside update() — swap in the user's custom
+ *     distance via @ModifyArg.
+ *
+ *  3. update() — apply freelook BEFORE moveBy() runs. This is the key detail:
+ *     moveBy uses this.rotation (the Quaternionf) to figure out which way is
+ *     "back" when shifting the camera away from the player. If we override
+ *     rotation BEFORE moveBy, the camera ends up at playerEyes + (-freelookForward
+ *     * distance) — i.e. orbiting the player using the freelook angle, with
+ *     the player centered in view. This matches Odin's behavior.
+ *
+ *     We inject at the call to clipToSpace inside the third-person block. By
+ *     that point setPos() has placed us at the player's eyes; we then overwrite
+ *     rotation, and the immediately-following moveBy(-clipToSpace(...)) shifts
+ *     the camera "back" along the freelook direction.
+ */
 @Mixin(Camera.class)
-public class CameraMixin {
+public abstract class CameraMixin {
+
+    @Shadow protected abstract void setRotation(float yaw, float pitch);
 
     @Inject(method = "clipToSpace", at = @At("HEAD"), cancellable = true)
     private void familyaddons$clipToSpace(float distance, CallbackInfoReturnable<Float> cir) {
@@ -18,14 +43,6 @@ public class CameraMixin {
         }
     }
 
-    /**
-     * Modifies the float arg to clipToSpace inside Camera.update. The value is
-     * computed by Math.max(scale * cameraDistanceAttr, vehicleScale * vehicleAttr)
-     * — for a player riding nothing, that's 1.0 * 4.0 = 4.0. We override here.
-     *
-     * require = 1 so if the target call ever changes, mixin apply will FAIL
-     * loudly at startup instead of silently doing nothing.
-     */
     @ModifyArg(
             method = "update(Lnet/minecraft/world/BlockView;Lnet/minecraft/entity/Entity;ZZF)V",
             at = @At(
@@ -36,9 +53,28 @@ public class CameraMixin {
     )
     private float familyaddons$customDistance(float original) {
         Float custom = CameraHelper.getCustomDistance();
-        float result = custom != null ? custom : original;
-        // Cheap one-shot debug — uncomment if you want to verify it's running:
-        // System.out.println("[FA Camera] clipToSpace arg: original=" + original + " final=" + result);
-        return result;
+        return custom != null ? custom : original;
+    }
+
+    /**
+     * Override rotation right before clipToSpace + moveBy run. Position is at
+     * the player's eyes at this point; setting rotation now means moveBy will
+     * shift the camera back along the freelook direction, orbiting the player.
+     *
+     * shift = -1 puts the inject point immediately BEFORE the clipToSpace
+     * INVOKE, so our setRotation call is the last thing before vanilla
+     * computes the camera offset.
+     */
+    @Inject(
+            method = "update(Lnet/minecraft/world/BlockView;Lnet/minecraft/entity/Entity;ZZF)V",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/render/Camera;clipToSpace(F)F",
+                    shift = At.Shift.BEFORE
+            )
+    )
+    private void familyaddons$applyFreelookBeforeMove(CallbackInfo ci) {
+        if (!CameraHelper.freelookActive) return;
+        setRotation(CameraHelper.freelookYaw, CameraHelper.freelookPitch);
     }
 }

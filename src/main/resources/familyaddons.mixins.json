@@ -15,7 +15,8 @@
     "HotbarScrollMixin",
     "ServerTickPacketMixin",
     "PearlInGameHudMixin",
-    "CameraMixin"
+    "CameraMixin",
+    "FreelookEntityMixin"
   ],
   "injectors": {
     "defaultRequire": 1
